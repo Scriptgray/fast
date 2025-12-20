@@ -36,8 +36,8 @@ function colorize(text, isError = false) {
 const CONFIG = {
     CACHE_DURATION: 300000,
     MAX_DURATION: 18000,
-    MAX_RETRIES: 3,
-    REQUEST_TIMEOUT: 5000,
+    MAX_RETRIES: 2,
+    REQUEST_TIMEOUT: 4500,
     MAX_FILENAME_LENGTH: 50,
     FAST_TIMEOUT: 85,
     VIDEO_TIMEOUT: 3700,
@@ -206,7 +206,7 @@ const savetube = {
     },
 }
 
-async function processDownloadWithRetry_savetube(isAudio, url, retryCount = 0, videoQuality = '360') {
+async function processDownloadWithRetry_savetube(isAudio, url, retryCount = 0, videoQuality = '720') {
     const type = isAudio ? 'audio' : 'video'
     
     let result = await savetube.download(url, type, videoQuality) 
@@ -501,7 +501,7 @@ async function yt2dow_cc(videoUrl, options = {}) {
     
     if (type === 'video') {
         if (!videoQualities.includes(quality)) {
-            if (quality !== '1080') throw new Error(`Invalid quality: ${quality}`)
+            if (quality !== '720') throw new Error(`Invalid quality: ${quality}`)
         }
         return processDownload_y2down(videoUrl, 'video', quality)
     } else {
