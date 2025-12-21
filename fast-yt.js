@@ -2,17 +2,16 @@ import fetch from "node-fetch"
 import axios from "axios"
 import crypto from "crypto"
 
-// --- ROTACIÓN DE DISPOSITIVOS PARA EVITAR BLOQUEOS ---
+// AGENTS PARA ROTACIÓN Y EVITAR BLOQUEOS
 const AGENTS = [
-    'Mozilla/5.0 (Linux; Android 13; SM-S901B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/112.0.0.0 Mobile Safari/537.36', // Android
-    'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1', // iPhone
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/117.0.0.0 Safari/537.36' // Windows
+    'Mozilla/5.0 (Linux; Android 10; SM-G981B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Mobile Safari/537.36',
+    'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36'
 ];
 
 const CONFIG = {
-    MAX_RETRIES: 3,
-    BUFFER_TIMEOUT: 60000,
-    MAX_FILENAME_LENGTH: 50
+    MAX_FILENAME_LENGTH: 50,
+    BUFFER_TIMEOUT: 120000 // 2 minutos máximo
 }
 
 function colorize(text, isError = false) {
@@ -30,15 +29,8 @@ function cleanFileName(n) {
     return n.replace(/[<>:"/\\|?*]/g, "").substring(0, CONFIG.MAX_FILENAME_LENGTH);
 }
 
-// --- SERVICIO SAVETUBE (ESTRUCTURA ORIGINAL OPTIMIZADA) ---
+// LÓGICA DE DESCARGA SAVETUBE (LA MÁS ESTABLE)
 const savetube = {
-    headers: (agent) => ({
-        'accept': '*/*',
-        'content-type': 'application/json',
-        'origin': 'https://yt.savetube.me',
-        'referer': 'https://yt.savetube.me/',
-        'user-agent': agent
-    }),
     decrypt: (enc) => {
         const secretKey = 'C5D58EF67A7584E4A29F6C35BBC4EB12';
         const data = Buffer.from(enc, 'base64');
@@ -50,45 +42,44 @@ const savetube = {
         const id = url.match(/v=([a-zA-Z0-9_-]{11})|be\/([a-zA-Z0-9_-]{11})|shorts\/([a-zA-Z0-9_-]{11})/)?.[1] || 
                    url.match(/v=([a-zA-Z0-9_-]{11})|be\/([a-zA-Z0-9_-]{11})|shorts\/([a-zA-Z0-9_-]{11})/)?.[2] || 
                    url.match(/v=([a-zA-Z0-9_-]{11})|be\/([a-zA-Z0-9_-]{11})|shorts\/([a-zA-Z0-9_-]{11})/)?.[3];
-        
-        const agent = AGENTS[0];
-        const { data: cdnRes } = await axios.get('https://media.savetube.me/api/random-cdn', { headers: savetube.headers(agent) });
-        const { data: infoRes } = await axios.post(`https://${cdnRes.cdn}/api/v2/info`, { url: `https://www.youtube.com/watch?v=${id}` }, { headers: savetube.headers(agent) });
+
+        const { data: cdnRes } = await axios.get('https://media.savetube.me/api/random-cdn');
+        const { data: infoRes } = await axios.post(`https://${cdnRes.cdn}/api/v2/info`, { url: `https://www.youtube.com/watch?v=${id}` });
         const info = savetube.decrypt(infoRes.data);
 
-        // Audio 128 (rápido) | Video 480 (estable y con audio incluido)
+        // CALIDADES ÓPTIMAS: Audio 128 (Ligero) | Video 480 (Seguro)
         const { data: dlRes } = await axios.post(`https://${cdnRes.cdn}/api/download`, {
-            id, downloadType: isAudio ? 'audio' : 'video', quality: isAudio ? '128' : '480', key: info.key
-        }, { headers: savetube.headers(agent) });
+            id, 
+            downloadType: isAudio ? 'audio' : 'video', 
+            quality: isAudio ? '128' : '480', 
+            key: info.key
+        });
 
-        if (!dlRes.data?.downloadUrl) throw new Error('No download URL');
-        return { download: dlRes.data.downloadUrl, title: info.title, winner: 'Savetube' };
+        return { download: dlRes.data.downloadUrl, title: info.title };
     }
 };
 
-// --- LOGICA DE CARRERA ---
 async function raceWithFallback(url, isAudio, originalTitle) {
-    console.log(colorize(`[BUSCANDO] ${isAudio ? 'Audio MP3' : 'Video MP4'}`));
+    console.log(colorize(`[BUSCANDO] Preparando ${isAudio ? 'Audio liviano' : 'Video estable'}`));
     try {
         const res = await savetube.download(url, isAudio);
-        console.log(colorize(`[ENVIADO] Canal: ${res.winner}`));
-        return { ...res, title: res.title || originalTitle };
+        return { ...res, winner: 'Savetube' };
     } catch (e) {
-        console.error(colorize(`[ERROR] Fallo en servicio: ${e.message}`, true));
+        console.error(colorize(`[ERROR] Servicio no disponible temporalmente.`, true));
         return null;
     }
 }
 
-// --- GETBUFFER CON ROTACIÓN DE AGENTS (SOLUCIÓN DEFINITIVA) ---
+// GETBUFFER REPARADO: SISTEMA ANTI-RUNTIME Y ANTI-BLOQUEO
 async function getBufferFromUrl(url) {
     let lastError;
     
-    // Intenta descargar el archivo rotando entre Android, iPhone y Windows
-    for (let i = 0; i < AGENTS.length; i++) {
+    // Intenta con 3 identidades diferentes si falla
+    for (const agent of AGENTS) {
         try {
             const res = await fetch(url, {
                 headers: {
-                    'User-Agent': AGENTS[i],
+                    'User-Agent': agent,
                     'Accept': '*/*',
                     'Referer': 'https://yt.savetube.me/',
                     'Connection': 'keep-alive'
@@ -101,20 +92,16 @@ async function getBufferFromUrl(url) {
             
             const buffer = await res.buffer();
             
-            // Si el buffer es muy pequeño, es un error del servidor (bloqueo)
-            if (buffer.length < 50000 && !url.includes('audio')) {
-                throw new Error("Archivo incompleto (Bloqueo de IP)");
-            }
+            // Si el buffer es basura (menos de 30KB), forzamos reintento
+            if (buffer.length < 30000) throw new Error("Archivo corrupto");
             
-            return buffer; 
+            return buffer;
         } catch (e) {
             lastError = e;
-            console.log(colorize(`[ERROR] Intento ${i+1} fallido. Probando con otro dispositivo...`));
-            await new Promise(r => setTimeout(r, 1500)); 
+            await new Promise(r => setTimeout(r, 1000));
         }
     }
-    
-    throw new Error(`No se pudo obtener el archivo después de 3 intentos: ${lastError.message}`);
+    throw lastError;
 }
 
 export { raceWithFallback, cleanFileName, getBufferFromUrl, colorize };
