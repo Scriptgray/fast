@@ -3,6 +3,8 @@ import yts from "yt-search"
 import axios from "axios"
 import crypto from "crypto"
 
+// ... (Se mantienen todas las funciones de ayuda: colorize, CONFIG, cache, sleep, cleanFileName, formatViews)
+
 function colorize(text, isError = false) {
     const codes = {
         reset: '\x1b[0m',
@@ -73,6 +75,8 @@ function formatViews(v) {
     if (num >= 1e3) return (num / 1e3).toFixed(1) + "K"
     return num.toString()
 }
+
+// ... (Se mantienen los objetos savetube, YTDown, yt2dow_cc y sus wrappers)
 
 const savetube = {
     api: {
@@ -396,7 +400,7 @@ class YTDown {
                     if (resA > target) return 1
                     if (resB > target) return -1
                     
-                    return resB - resA
+                    return resB - xA
                 })[0] || med[0]
         }
         return med[0]
@@ -613,6 +617,7 @@ function timeoutPromise(promise, ms, name) {
     })
 }
 
+// FUNCIÓN MODIFICADA CON EL MENSAJE SOLICITADO
 async function raceWithFallback(url, isAudio, originalTitle) {
     const raceTimeout = isAudio ? CONFIG.FAST_TIMEOUT : CONFIG.VIDEO_TIMEOUT
     const fallbackTimeout = isAudio ? CONFIG.AUDIO_FALLBACK_TIMEOUT : CONFIG.FALLBACK_RACE_TIMEOUT
@@ -652,6 +657,8 @@ async function raceWithFallback(url, isAudio, originalTitle) {
     let mediaResult = await executeRace(raceTimeout, ' [RÁPIDA]')
     
     if (mediaResult?.download) {
+        // Añadir el mensaje de Corvette
+        mediaResult.credit = "By Corvette para Shiroko";
         return mediaResult
     }
     
@@ -659,6 +666,7 @@ async function raceWithFallback(url, isAudio, originalTitle) {
         mediaResult = await executeRace(fallbackTimeout, ' [FALLBACK]')
         
         if (mediaResult?.download) {
+            mediaResult.credit = "By Corvette para Shiroko";
             return mediaResult
         }
     }
@@ -672,6 +680,8 @@ async function raceWithFallback(url, isAudio, originalTitle) {
         return null
     }
 
+    // Asegurar que el crédito esté presente en el resultado final exitoso
+    mediaResult.credit = "By Corvette para Shiroko";
     return mediaResult
 }
 
