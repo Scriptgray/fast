@@ -2,17 +2,13 @@ import fetch from "node-fetch"
 import axios from "axios"
 import crypto from "crypto"
 
-// --- SIMULACIÓN DE ANDROID (CHROME) ---
-const ANDROID_UA = 'Mozilla/5.0 (Linux; Android 13; SM-S901B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/112.0.0.0 Mobile Safari/537.36';
+// --- AGENT DE ANDROID (FIREFOX/CHROME MOBILE) ---
+const ANDROID_UA = 'Mozilla/5.0 (Android 13; Mobile; rv:109.0) Gecko/114.0 Firefox/114.0';
 
 const CONFIG = {
-    CACHE_DURATION: 300000,
-    MAX_RETRIES: 2,
-    REQUEST_TIMEOUT: 15000,
     MAX_FILENAME_LENGTH: 50,
-    // Tiempos ajustados para asegurar que el archivo se genere bien
-    RACE_TIMEOUT: 25000,
-    BUFFER_TIMEOUT: 60000 
+    REQUEST_TIMEOUT: 20000,
+    BUFFER_TIMEOUT: 120000 // 2 minutos para videos pesados
 }
 
 // --- UTILIDADES ---
@@ -31,102 +27,94 @@ function cleanFileName(n) {
     return n.replace(/[<>:"/\\|?*]/g, "").substring(0, CONFIG.MAX_FILENAME_LENGTH);
 }
 
-// --- SERVICIOS CON CABECERAS DE ANDROID ---
+// --- SERVICIOS CORREGIDOS PARA VIDEO REAL ---
 
-const savetube = {
-    headers: {
-        'accept': '*/*',
-        'content-type': 'application/json',
-        'origin': 'https://yt.savetube.me',
-        'referer': 'https://yt.savetube.me/',
-        'user-agent': ANDROID_UA
+const services = {
+    // Savenow: Es el mejor para VIDEO porque entrega MP4 con audio incluido
+    savenow: async (url, isAudio) => {
+        const apiKey = 'dfcb6d76f2f6a9894gjkege8a4ab232222';
+        const format = isAudio ? 'mp3' : '360'; // 360/720 para máxima compatibilidad de buffer
+        const init = await fetch(`https://p.savenow.to/ajax/download.php?copyright=0&format=${format}&url=${encodeURIComponent(url)}&api=${apiKey}`, { headers: { 'User-Agent': ANDROID_UA } });
+        const data = await init.json();
+        
+        if (!data.id) throw 'Error inicial';
+        
+        // Esperar a que el servidor procese el video real
+        for (let i = 0; i < 10; i++) {
+            await new Promise(r => setTimeout(r, 3000));
+            const prog = await (await fetch(`https://p.savenow.to/api/progress?id=${data.id}`, { headers: { 'User-Agent': ANDROID_UA } })).json();
+            if (prog.progress === 1000 && prog.download_url) {
+                return { download: prog.download_url, winner: 'Savenow' };
+            }
+        }
+        throw 'Timeout procesado';
     },
-    decrypt: (enc) => {
-        const secretKey = 'C5D58EF67A7584E4A29F6C35BBC4EB12';
-        const data = Buffer.from(enc, 'base64');
-        const decipher = crypto.createDecipheriv('aes-128-cbc', Buffer.from(secretKey, 'hex'), data.slice(0, 16));
-        const decrypted = Buffer.concat([decipher.update(data.slice(16)), decipher.final()]);
-        return JSON.parse(decrypted.toString());
-    },
-    download: async (url, isAudio) => {
+
+    // Savetube: Muy rápido para AUDIO
+    savetube: async (url, isAudio) => {
         const id = url.match(/v=([a-zA-Z0-9_-]{11})|be\/([a-zA-Z0-9_-]{11})|shorts\/([a-zA-Z0-9_-]{11})/)?.[1] || url.match(/v=([a-zA-Z0-9_-]{11})|be\/([a-zA-Z0-9_-]{11})|shorts\/([a-zA-Z0-9_-]{11})/)?.[2] || url.match(/v=([a-zA-Z0-9_-]{11})|be\/([a-zA-Z0-9_-]{11})|shorts\/([a-zA-Z0-9_-]{11})/)?.[3];
-        const { data: cdnRes } = await axios.get('https://media.savetube.me/api/random-cdn', { headers: savetube.headers });
-        const { data: infoRes } = await axios.post(`https://${cdnRes.cdn}/api/v2/info`, { url: `https://www.youtube.com/watch?v=${id}` }, { headers: savetube.headers });
-        const info = savetube.decrypt(infoRes.data);
-        const { data: dlRes } = await axios.post(`https://${cdnRes.cdn}/api/download`, {
-            id, downloadType: isAudio ? 'audio' : 'video', quality: isAudio ? '128' : '720', key: info.key
-        }, { headers: savetube.headers });
-        if (!dlRes.data?.downloadUrl) throw 'Error link';
-        return { download: dlRes.data.downloadUrl, winner: 'Savetube', title: info.title };
+        const headers = { 'user-agent': ANDROID_UA, 'content-type': 'application/json' };
+        const { data: cdn } = await axios.get('https://media.savetube.me/api/random-cdn', { headers });
+        const { data: infoRes } = await axios.post(`https://${cdn.cdn}/api/v2/info`, { url: `https://www.youtube.com/watch?v=${id}` }, { headers });
+        
+        const secretKey = 'C5D58EF67A7584E4A29F6C35BBC4EB12';
+        const encData = Buffer.from(infoRes.data, 'base64');
+        const decipher = crypto.createDecipheriv('aes-128-cbc', Buffer.from(secretKey, 'hex'), encData.slice(0, 16));
+        const dec = JSON.parse(Buffer.concat([decipher.update(encData.slice(16)), decipher.final()]).toString());
+
+        const { data: dl } = await axios.post(`https://${cdn.cdn}/api/download`, {
+            id, downloadType: isAudio ? 'audio' : 'video', quality: isAudio ? '128' : '480', key: dec.key
+        }, { headers });
+        
+        return { download: dl.data.downloadUrl, winner: 'Savetube', title: dec.title };
     }
 };
 
-const ytdown = {
-    download: async (url, isAudio) => {
-        const headers = { 'User-Agent': ANDROID_UA, 'Content-Type': 'application/x-www-form-urlencoded' };
-        const { data: info } = await axios.post('https://ytdown.to/proxy.php', `url=${encodeURIComponent(url)}`, { headers });
-        const items = info.api?.mediaItems || [];
-        const best = items.find(it => isAudio ? it.type === 'Audio' : it.mediaRes?.includes('720')) || items[0];
-        if (!best?.mediaUrl) throw 'No media';
-        return { download: best.mediaUrl, winner: 'Ytdown.to' };
-    }
-};
-
-const ytmp3 = {
-    download: async (url) => {
-        const { data } = await axios.post('https://hub.y2mp3.co/', {
-            url, downloadMode: "audio", brandName: "ytmp3.gg", audioFormat: "mp3", audioBitrate: "128"
-        }, { headers: { 'User-Agent': ANDROID_UA } });
-        if (!data.url) throw 'Fail';
-        return { download: data.url, winner: 'Ytmp3.gg' };
-    }
-};
-
-// --- LOGICA DE ENVÍO Y CARRERA ---
+// --- CARRERA CON PRIORIDAD ---
 
 async function raceWithFallback(url, isAudio, originalTitle) {
-    console.log(colorize(`[BUSCANDO] ${isAudio ? 'Audio' : 'Video'} → ${originalTitle}`));
+    console.log(colorize(`[BUSCANDO] Solicitando ${isAudio ? 'Audio' : 'Video'}`));
 
-    const promises = [
-        savetube.download(url, isAudio).catch(() => null),
-        ytdown.download(url, isAudio).catch(() => null)
-    ];
-    if (isAudio) promises.push(ytmp3.download(url).catch(() => null));
+    try {
+        // Para VIDEO, Savenow es más lento pero SEGURO. Savetube es rápido pero a veces falla en video.
+        // Lanzamos ambos; el primero que resuelva con un archivo válido gana.
+        const tasks = [
+            services.savetube(url, isAudio).catch(() => null),
+            services.savenow(url, isAudio).catch(() => null)
+        ];
 
-    // Esperamos a la primera que responda BIEN
-    const results = await Promise.all(promises);
-    const winner = results.find(r => r && r.download);
+        const results = await Promise.all(tasks);
+        const winner = results.find(r => r && r.download);
 
-    if (!winner) {
-        console.error(colorize(`[ERROR] No se pudo obtener enlace válido de ningún servicio.`, true));
+        if (!winner) throw 'No result';
+
+        console.log(colorize(`[ENVIADO] Canal: ${winner.winner}`));
+        return { ...winner, title: winner.title || originalTitle };
+    } catch (e) {
+        console.error(colorize(`[ERROR] No se pudo obtener enlace reproducible.`, true));
         return null;
     }
-
-    console.log(colorize(`[ENVIADO] Éxito vía ${winner.winner}`));
-    return { ...winner, title: winner.title || originalTitle };
 }
 
 async function getBufferFromUrl(url) {
     try {
-        // MUY IMPORTANTE: Se añade el User-Agent también al descargar el archivo
-        // Esto evita que mande archivos de 0kb o corruptos.
         const res = await fetch(url, { 
             headers: { 
                 'User-Agent': ANDROID_UA,
-                'Accept': '*/*',
-                'Connection': 'keep-alive'
+                'Accept': 'video/mp4,video/x-m4v,video/*;q=0.9,audio/mpeg,audio/*;q=0.8'
             },
             timeout: CONFIG.BUFFER_TIMEOUT 
         });
         
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        if (!res.ok) throw `Status ${res.status}`;
         
         const buffer = await res.buffer();
-        if (buffer.length < 1000) throw new Error("Archivo demasiado pequeño/corrupto");
+        // Si el buffer es menor a 50KB, es un error del servidor, no un video.
+        if (buffer.length < 51200) throw 'Archivo inválido (muy pequeño)';
         
         return buffer;
     } catch (e) {
-        console.error(colorize(`[ERROR] Error al descargar buffer: ${e.message}`, true));
+        console.error(colorize(`[ERROR] El archivo no se pudo descargar correctamente: ${e}`, true));
         throw e;
     }
 }
