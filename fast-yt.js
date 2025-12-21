@@ -2,14 +2,15 @@ import fetch from "node-fetch"
 import axios from "axios"
 import crypto from "crypto"
 
-// AGENT QUE SIMULA ANDROID CHROME PERFECTAMENTE
+// USER-AGENT DE ANDROID (CHROME) - INDISPENSABLE PARA EVITAR BLOQUEOS
 const ANDROID_UA = 'Mozilla/5.0 (Linux; Android 13; SM-S901B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/112.0.0.0 Mobile Safari/537.36';
 
 const CONFIG = {
     MAX_FILENAME_LENGTH: 50,
-    BUFFER_TIMEOUT: 180000, 
+    BUFFER_TIMEOUT: 240000, // 4 minutos para videos largos
 }
 
+// --- UTILIDADES ---
 function colorize(text, isError = false) {
     const codes = { reset: '\x1b[0m', bright: '\x1b[1m', fg: { cyan: '\x1b[36m', red: '\x1b[31m', white: '\x1b[37m' } };
     let prefix = '', colorCode = codes.fg.cyan;
@@ -25,79 +26,93 @@ function cleanFileName(n) {
     return n.replace(/[<>:"/\\|?*]/g, "").substring(0, CONFIG.MAX_FILENAME_LENGTH);
 }
 
-// SERVICIOS
-const savetube = {
-    headers: {
-        'Accept': 'application/json, text/plain, */*',
-        'Content-Type': 'application/json',
-        'Origin': 'https://yt.savetube.me',
-        'Referer': 'https://yt.savetube.me/',
-        'User-Agent': ANDROID_UA
-    },
-    download: async (url, isAudio) => {
+// --- SERVICIOS ---
+
+const services = {
+    // MÉTODO 1: SAVETUBE (AES DECRYPT)
+    savetube: async (url, isAudio) => {
         const id = url.match(/v=([a-zA-Z0-9_-]{11})|be\/([a-zA-Z0-9_-]{11})|shorts\/([a-zA-Z0-9_-]{11})/)?.[1] || 
                    url.match(/v=([a-zA-Z0-9_-]{11})|be\/([a-zA-Z0-9_-]{11})|shorts\/([a-zA-Z0-9_-]{11})/)?.[2] || 
                    url.match(/v=([a-zA-Z0-9_-]{11})|be\/([a-zA-Z0-9_-]{11})|shorts\/([a-zA-Z0-9_-]{11})/)?.[3];
         
-        const { data: cdnRes } = await axios.get('https://media.savetube.me/api/random-cdn', { headers: savetube.headers });
-        const cdn = cdnRes.cdn;
-
-        const { data: infoRes } = await axios.post(`https://${cdn}/api/v2/info`, { url: `https://www.youtube.com/watch?v=${id}` }, { headers: savetube.headers });
+        const headers = { 'User-Agent': ANDROID_UA, 'Content-Type': 'application/json' };
+        const { data: cdnRes } = await axios.get('https://media.savetube.me/api/random-cdn', { headers });
+        const { data: infoRes } = await axios.post(`https://${cdnRes.cdn}/api/v2/info`, { url: `https://www.youtube.com/watch?v=${id}` }, { headers });
+        
         const secretKey = 'C5D58EF67A7584E4A29F6C35BBC4EB12';
         const encData = Buffer.from(infoRes.data, 'base64');
         const decipher = crypto.createDecipheriv('aes-128-cbc', Buffer.from(secretKey, 'hex'), encData.slice(0, 16));
         const dec = JSON.parse(Buffer.concat([decipher.update(encData.slice(16)), decipher.final()]).toString());
 
-        // Calidad 360p o 480p para asegurar que el archivo sea VÁLIDO y no requiera unión manual
-        const quality = isAudio ? '128' : '480'; 
+        const { data: dlRes } = await axios.post(`https://${cdnRes.cdn}/api/download`, {
+            id, downloadType: isAudio ? 'audio' : 'video', quality: isAudio ? '128' : '480', key: dec.key
+        }, { headers });
 
-        const { data: dlRes } = await axios.post(`https://${cdn}/api/download`, {
-            id, downloadType: isAudio ? 'audio' : 'video', quality, key: dec.key
-        }, { headers: savetube.headers });
-
-        if (!dlRes.data?.downloadUrl) throw 'Link Error';
         return { download: dlRes.data.downloadUrl, winner: 'Savetube', title: dec.title };
-    }
-}
+    },
 
-// CARRERA DINÁMICA
+    // MÉTODO 2: YTDOWN.TO (BACKUP PARA VIDEO)
+    ytdown: async (url, isAudio) => {
+        const { data: info } = await axios.post('https://ytdown.to/proxy.php', `url=${encodeURIComponent(url)}`, { 
+            headers: { 'User-Agent': ANDROID_UA, 'Content-Type': 'application/x-www-form-urlencoded' } 
+        });
+        const items = info.api?.mediaItems || [];
+        const target = items.find(it => isAudio ? it.type === 'Audio' : it.mediaRes?.includes('480')) || items[0];
+        if (!target?.mediaUrl) throw 'No media';
+        return { download: target.mediaUrl, winner: 'Ytdown.to' };
+    }
+};
+
+// --- FUNCIÓN DE CARRERA ---
 async function raceWithFallback(url, isAudio, originalTitle) {
-    console.log(colorize(`[BUSCANDO] ${isAudio ? 'Audio' : 'Video (MP4 Progresivo)'}`));
-    try {
-        const result = await savetube.download(url, isAudio);
-        console.log(colorize(`[ENVIADO] Éxito vía Savetube`));
-        return { ...result, title: result.title || originalTitle };
-    } catch (e) {
-        console.error(colorize(`[ERROR] No se pudo obtener el video.`, true));
+    console.log(colorize(`[BUSCANDO] ${isAudio ? 'Audio' : 'Video'}`));
+    
+    // Si es video, intentamos ambos en paralelo
+    const tasks = [services.savetube(url, isAudio).catch(() => null)];
+    if (!isAudio) tasks.push(services.ytdown(url, isAudio).catch(() => null));
+
+    const results = await Promise.all(tasks);
+    const winner = results.find(r => r && r.download);
+
+    if (!winner) {
+        console.error(colorize(`[ERROR] Ningún servicio pudo generar el link.`, true));
         return null;
     }
+
+    console.log(colorize(`[ENVIADO] Link obtenido vía ${winner.winner}`));
+    return { ...winner, title: winner.title || originalTitle };
 }
 
-// DESCARGA DE BUFFER SIN BLOQUEO (SIMULA NAVEGADOR)
+// --- DESCARGA DE BUFFER (EL PUNTO CRÍTICO) ---
 async function getBufferFromUrl(url) {
     try {
-        const res = await fetch(url, { 
-            headers: { 
+        const response = await fetch(url, {
+            headers: {
                 'User-Agent': ANDROID_UA,
-                'Accept': 'video/mp4,video/x-m4v,video/*,audio/mpeg,audio/*',
-                'Referer': 'https://yt.savetube.me/', // IMPORTANTE PARA EL VIDEO
-                'Connection': 'keep-alive'
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+                'Accept-Language': 'en-US,en;q=0.5',
+                'DNT': '1',
+                'Connection': 'keep-alive',
+                'Upgrade-Insecure-Requests': '1',
+                'Referer': 'https://yt.savetube.me/'
             },
+            method: 'GET',
             redirect: 'follow'
         });
 
-        if (!res.ok) throw `Status ${res.status}`;
+        if (!response.ok) throw `Error HTTP ${response.status}`;
+
+        const buffer = await response.buffer();
         
-        const buffer = await res.buffer();
-        
-        // Validación de tamaño real para evitar archivos corruptos
-        if (buffer.length < 100000 && !url.includes('audio')) { 
-            throw 'El video obtenido no es válido (Bloqueo de CDN)';
+        // Validación de tamaño (si pesa menos de 10KB es basura/bloqueo)
+        if (buffer.length < 10240) {
+            throw 'El archivo descargado es inválido o está bloqueado por el servidor.';
         }
-        
+
         return buffer;
     } catch (e) {
-        console.error(colorize(`[ERROR] Falló la descarga del archivo final: ${e}`, true));
+        // Si falla, mandamos el error exacto para saber qué pasó
+        console.error(colorize(`[ERROR] getBuffer falló: ${e}`, true));
         throw e;
     }
 }
