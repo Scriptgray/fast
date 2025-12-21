@@ -1,13 +1,14 @@
 import fetch from "node-fetch"
 import axios from "axios"
 import crypto from "crypto"
+import { PassThrough } from "stream"
 
-// USER-AGENT DE ANDROID (CHROME) - INDISPENSABLE PARA EVITAR BLOQUEOS
-const ANDROID_UA = 'Mozilla/5.0 (Linux; Android 13; SM-S901B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/112.0.0.0 Mobile Safari/537.36';
+// AGENT ULTRA-REALISTA DE ANDROID
+const ANDROID_UA = 'Mozilla/5.0 (Linux; Android 10; SM-G981B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Mobile Safari/537.36';
 
 const CONFIG = {
     MAX_FILENAME_LENGTH: 50,
-    BUFFER_TIMEOUT: 240000, // 4 minutos para videos largos
+    BUFFER_TIMEOUT: 300000, // 5 Minutos (Máxima paciencia)
 }
 
 // --- UTILIDADES ---
@@ -28,9 +29,8 @@ function cleanFileName(n) {
 
 // --- SERVICIOS ---
 
-const services = {
-    // MÉTODO 1: SAVETUBE (AES DECRYPT)
-    savetube: async (url, isAudio) => {
+const savetube = {
+    download: async (url, isAudio) => {
         const id = url.match(/v=([a-zA-Z0-9_-]{11})|be\/([a-zA-Z0-9_-]{11})|shorts\/([a-zA-Z0-9_-]{11})/)?.[1] || 
                    url.match(/v=([a-zA-Z0-9_-]{11})|be\/([a-zA-Z0-9_-]{11})|shorts\/([a-zA-Z0-9_-]{11})/)?.[2] || 
                    url.match(/v=([a-zA-Z0-9_-]{11})|be\/([a-zA-Z0-9_-]{11})|shorts\/([a-zA-Z0-9_-]{11})/)?.[3];
@@ -45,74 +45,79 @@ const services = {
         const dec = JSON.parse(Buffer.concat([decipher.update(encData.slice(16)), decipher.final()]).toString());
 
         const { data: dlRes } = await axios.post(`https://${cdnRes.cdn}/api/download`, {
-            id, downloadType: isAudio ? 'audio' : 'video', quality: isAudio ? '128' : '480', key: dec.key
+            id, downloadType: isAudio ? 'audio' : 'video', quality: isAudio ? '128' : '360', key: dec.key
         }, { headers });
 
         return { download: dlRes.data.downloadUrl, winner: 'Savetube', title: dec.title };
-    },
+    }
+};
 
-    // MÉTODO 2: YTDOWN.TO (BACKUP PARA VIDEO)
-    ytdown: async (url, isAudio) => {
-        const { data: info } = await axios.post('https://ytdown.to/proxy.php', `url=${encodeURIComponent(url)}`, { 
-            headers: { 'User-Agent': ANDROID_UA, 'Content-Type': 'application/x-www-form-urlencoded' } 
+const y2mate = {
+    // Servicio de respaldo ultra-estable
+    download: async (url, isAudio) => {
+        const { data } = await axios.post('https://www.y2mate.com/api/ajaxSearch/index', `url=${encodeURIComponent(url)}&q_auto=0&ajax=1`, {
+            headers: { 'User-Agent': ANDROID_UA, 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' }
         });
-        const items = info.api?.mediaItems || [];
-        const target = items.find(it => isAudio ? it.type === 'Audio' : it.mediaRes?.includes('480')) || items[0];
-        if (!target?.mediaUrl) throw 'No media';
-        return { download: target.mediaUrl, winner: 'Ytdown.to' };
+        const vidId = data.vid;
+        const key = isAudio ? Object.values(data.links.mp3).find(v => v.q === '128kbps')?.k : Object.values(data.links.mp4).find(v => v.q === '360p')?.k;
+        
+        const { data: dlRes } = await axios.post('https://www.y2mate.com/api/ajaxSearch/convert', `type=youtube&_id=${vidId}&v_id=${vidId}&ajax=1&token=&ftype=${isAudio ? 'mp3' : 'mp4'}&fquality=${isAudio ? '128' : '360'}&k=${encodeURIComponent(key)}`, {
+            headers: { 'User-Agent': ANDROID_UA, 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' }
+        });
+        
+        return { download: dlRes.dlink, winner: 'Y2Mate' };
     }
 };
 
 // --- FUNCIÓN DE CARRERA ---
 async function raceWithFallback(url, isAudio, originalTitle) {
-    console.log(colorize(`[BUSCANDO] ${isAudio ? 'Audio' : 'Video'}`));
+    console.log(colorize(`[BUSCANDO] Intentando descarga segura...`));
     
-    // Si es video, intentamos ambos en paralelo
-    const tasks = [services.savetube(url, isAudio).catch(() => null)];
-    if (!isAudio) tasks.push(services.ytdown(url, isAudio).catch(() => null));
+    // Lista de servicios en orden de estabilidad
+    const servicesList = [
+        () => savetube.download(url, isAudio),
+        () => y2mate.download(url, isAudio)
+    ];
 
-    const results = await Promise.all(tasks);
-    const winner = results.find(r => r && r.download);
-
-    if (!winner) {
-        console.error(colorize(`[ERROR] Ningún servicio pudo generar el link.`, true));
-        return null;
+    for (let service of servicesList) {
+        try {
+            const res = await service();
+            if (res && res.download && res.download.startsWith('http')) {
+                console.log(colorize(`[ENVIADO] Éxito vía ${res.winner}`));
+                return { ...res, title: res.title || originalTitle };
+            }
+        } catch (e) { continue; }
     }
-
-    console.log(colorize(`[ENVIADO] Link obtenido vía ${winner.winner}`));
-    return { ...winner, title: winner.title || originalTitle };
+    return null;
 }
 
-// --- DESCARGA DE BUFFER (EL PUNTO CRÍTICO) ---
+// --- DESCARGA DE BUFFER CON CABECERAS DE NAVEGACIÓN ---
 async function getBufferFromUrl(url) {
     try {
-        const response = await fetch(url, {
+        const response = await axios({
+            method: 'get',
+            url: url,
+            responseType: 'arraybuffer',
             headers: {
                 'User-Agent': ANDROID_UA,
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-                'Accept-Language': 'en-US,en;q=0.5',
-                'DNT': '1',
-                'Connection': 'keep-alive',
-                'Upgrade-Insecure-Requests': '1',
-                'Referer': 'https://yt.savetube.me/'
+                'Referer': 'https://www.youtube.com/',
+                'Accept': '*/*',
+                'Range': 'bytes=0-',
+                'Connection': 'keep-alive'
             },
-            method: 'GET',
-            redirect: 'follow'
+            timeout: CONFIG.BUFFER_TIMEOUT,
+            maxRedirects: 10
         });
 
-        if (!response.ok) throw `Error HTTP ${response.status}`;
-
-        const buffer = await response.buffer();
+        const buffer = Buffer.from(response.data);
         
-        // Validación de tamaño (si pesa menos de 10KB es basura/bloqueo)
-        if (buffer.length < 10240) {
-            throw 'El archivo descargado es inválido o está bloqueado por el servidor.';
+        if (buffer.length < 50000) { // Menos de 50KB es un error seguro
+            throw new Error('Archivo demasiado pequeño o bloqueado');
         }
 
         return buffer;
     } catch (e) {
-        // Si falla, mandamos el error exacto para saber qué pasó
-        console.error(colorize(`[ERROR] getBuffer falló: ${e}`, true));
+        console.error(colorize(`[ERROR] Descarga fallida: ${e.message}`, true));
         throw e;
     }
 }
