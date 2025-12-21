@@ -4,7 +4,6 @@ import axios from "axios"
 import crypto from "crypto"
 
 // --- CONFIGURACIÓN Y UTILIDADES ---
-
 const CONFIG = {
     CACHE_DURATION: 300000,
     MAX_DURATION: 18000,
@@ -46,8 +45,7 @@ function cleanFileName(n) {
     return n.replace(/[<>:"/\\|?*]/g, "").substring(0, CONFIG.MAX_FILENAME_LENGTH)
 }
 
-// --- SERVICIOS DE DESCARGA (SAVETUBE, YTDown, etc.) ---
-
+// --- SERVICIOS DE DESCARGA ---
 const savetube = {
     api: { base: 'https://media.savetube.me/api', info: '/v2/info', download: '/download', cdn: '/random-cdn' },
     headers: {
@@ -68,9 +66,6 @@ const savetube = {
             try { return JSON.parse(decrypted.toString()) } catch { return { title: 'Desconocido', duration: '??', key: null } }
         },
     },
-    isUrl: (str) => {
-        try { return /youtube.com|youtu.be/.test(str) } catch { return false }
-    },
     youtube: (url) => {
         const patterns = [/v=([a-zA-Z0-9_-]{11})/, /embed\/([a-zA-Z0-9_-]{11})/, /youtu\.be\/([a-zA-Z0-9_-]{11})/, /shorts\/([a-zA-Z0-9_-]{11})/, /live\/([a-zA-Z0-9_-]{11})/]
         for (let p of patterns) { if (p.test(url)) return url.match(p)[1] }
@@ -80,7 +75,7 @@ const savetube = {
         try {
             const { data: res } = await axios({
                 method,
-                url: `${endpoint.startsWith('http') ? '' : savetube.api.base}${endpoint}`,
+                url: `${endpoint.startsWith('http') ? '' : 'https://media.savetube.me/api'}${endpoint}`,
                 data: method === 'post' ? data : undefined,
                 params: method === 'get' ? data : undefined,
                 headers: savetube.headers,
@@ -89,38 +84,18 @@ const savetube = {
             return { status: true, data: res }
         } catch (err) { return { status: false, error: err.message } }
     },
-    getCDN: async () => {
-        const cacheKey = 'savetube_cdn', cached = cache.get(cacheKey)
-        if (cached && Date.now() - cached.timestamp < 300000) return { status: true, data: cached.data }
-        const r = await savetube.request(savetube.api.cdn, {}, 'get')
-        if (!r.status) return r
-        cache.set(cacheKey, { data: r.data.cdn, timestamp: Date.now() })
-        return { status: true, data: r.data.cdn }
-    },
     download: async (link, type = 'audio', quality = '360') => { 
         const id = savetube.youtube(link)
-        if (!id) return { status: false, error: 'No se pudo obtener ID del video' }
+        if (!id) return { status: false }
         try {
-            const cdnx = await savetube.getCDN()
-            if (!cdnx.status) throw new Error('No se pudo obtener CDN')
-            const info = await savetube.request(`https://${cdnx.data}${savetube.api.info}`, { url: `https://www.youtube.com/watch?v=${id}` })
+            const info = await savetube.request(`https://media.savetube.me/api/v2/info`, { url: `https://www.youtube.com/watch?v=${id}` })
             const decrypted = await savetube.crypto.decrypt(info.data.data)
-            const downloadData = await savetube.request(`https://${cdnx.data}${savetube.api.download}`, {
+            const downloadData = await savetube.request(`https://media.savetube.me/api/download`, {
                 id, downloadType: type === 'audio' ? 'audio' : 'video', quality: type === 'audio' ? '128' : quality, key: decrypted.key,
             })
-            return { status: true, result: { title: decrypted.title || 'Desconocido', download: downloadData.data?.data?.downloadUrl, duration: decrypted.duration || '??' } }
-        } catch (err) { return { status: false, error: err.message } }
-    },
-}
-
-async function processDownloadWithRetry_savetube(isAudio, url, retryCount = 0, videoQuality = '360') {
-    const type = isAudio ? 'audio' : 'video'
-    let result = await savetube.download(url, type, videoQuality) 
-    if (!result.status && retryCount < CONFIG.MAX_RETRIES) {
-        await sleep(1500)
-        return processDownloadWithRetry_savetube(isAudio, url, retryCount + 1, videoQuality) 
+            return { status: true, result: { title: decrypted.title, download: downloadData.data?.data?.downloadUrl } }
+        } catch (err) { return { status: false } }
     }
-    return result
 }
 
 class YTDown {
@@ -149,7 +124,7 @@ async function yt2dow_cc(videoUrl, options = {}) {
     const apiKey = 'dfcb6d76f2f6a9894gjkege8a4ab232222'
     const res = await fetch(`https://p.savenow.to/ajax/download.php?copyright=0&format=${type === 'video' ? quality : format}&url=${encodeURIComponent(videoUrl)}&api=${apiKey}`)
     const data = await res.json()
-    return `https://p.savenow.to/api/progress?id=${data.id}` // Simplificado para la carrera
+    return `https://p.savenow.to/api/progress?id=${data.id}`
 }
 
 async function descargarAudioYouTube(urlVideo) {
@@ -158,28 +133,27 @@ async function descargarAudioYouTube(urlVideo) {
 }
 
 // --- WRAPPERS ---
-
 const TARGET_VIDEO_QUALITY = '360' 
 
 async function savetube_wrapper(url, isAudio, originalTitle) {
-    const result = await processDownloadWithRetry_savetube(isAudio, url, 0, TARGET_VIDEO_QUALITY)
+    const result = await savetube.download(url, isAudio ? 'audio' : 'video', TARGET_VIDEO_QUALITY)
     if (!result?.status || !result?.result?.download) throw new Error("Savetube Fail")
-    return { download: result.result.download, title: result.result.title || originalTitle, winner: 'Savetube' }
+    return { download: result.result.download, title: result.result.title || originalTitle }
 }
 
 async function ytdownV2_wrapper(url, isAudio, originalTitle) {
     const downloadUrl = await ytdownV2(url, isAudio ? 'MP3' : 'MP4', TARGET_VIDEO_QUALITY)
-    return { download: downloadUrl, title: originalTitle, winner: 'Ytdown.to' }
+    return { download: downloadUrl, title: originalTitle }
 }
 
 async function yt2dow_cc_wrapper(url, isAudio, originalTitle) {
     const downloadUrl = await yt2dow_cc(url, isAudio ? { type: 'audio', format: 'mp3' } : { type: 'video', quality: TARGET_VIDEO_QUALITY })
-    return { download: downloadUrl, title: originalTitle, winner: 'Yt2dow.cc' }
+    return { download: downloadUrl, title: originalTitle }
 }
 
 async function ytdown_gg_wrapper(url, originalTitle) {
     const result = await descargarAudioYouTube(url)
-    return { download: result.downloadUrl, title: originalTitle, winner: 'Ytmp3.gg' }
+    return { download: result.downloadUrl, title: originalTitle }
 }
 
 function timeoutPromise(promise, ms, name) {
@@ -189,19 +163,18 @@ function timeoutPromise(promise, ms, name) {
     })
 }
 
-// --- FUNCIÓN PRINCIPAL SOLICITADA ---
-
+// --- FUNCIÓN PRINCIPAL MODIFICADA ---
 async function raceWithFallback(url, isAudio, originalTitle, conn, jid) {
     const raceTimeout = isAudio ? CONFIG.FAST_TIMEOUT : CONFIG.VIDEO_TIMEOUT
     const fallbackTimeout = isAudio ? CONFIG.AUDIO_FALLBACK_TIMEOUT : CONFIG.FALLBACK_RACE_TIMEOUT
 
-    const executeRace = async (ms, name_suffix = '') => {
+    const executeRace = async (ms) => {
         const promises = [
-            timeoutPromise(savetube_wrapper(url, isAudio, originalTitle), ms, `Savetube${name_suffix}`).catch(e => ({ error: e.message })),
-            timeoutPromise(ytdownV2_wrapper(url, isAudio, originalTitle), ms, `Ytdown.to${name_suffix}`).catch(e => ({ error: e.message })),
-            timeoutPromise(yt2dow_cc_wrapper(url, isAudio, originalTitle), ms, `Yt2dow.cc${name_suffix}`).catch(e => ({ error: e.message })),
+            timeoutPromise(savetube_wrapper(url, isAudio, originalTitle), ms, 'S1').catch(() => ({})),
+            timeoutPromise(ytdownV2_wrapper(url, isAudio, originalTitle), ms, 'S2').catch(() => ({})),
+            timeoutPromise(yt2dow_cc_wrapper(url, isAudio, originalTitle), ms, 'S3').catch(() => ({})),
         ]
-        if (isAudio) promises.push(timeoutPromise(ytdown_gg_wrapper(url, originalTitle), ms, `Ytmp3.gg${name_suffix}`).catch(e => ({ error: e.message })))
+        if (isAudio) promises.push(timeoutPromise(ytdown_gg_wrapper(url, originalTitle), ms, 'S4').catch(() => ({})))
 
         const winner = await Promise.race(promises)
         if (winner && winner.download) return winner
@@ -215,9 +188,13 @@ async function raceWithFallback(url, isAudio, originalTitle, conn, jid) {
     if (!mediaResult?.download) mediaResult = await executeRace(CONFIG.FALLBACK_RACE_TIMEOUT)
 
     if (mediaResult?.download) {
+        // PERSONALIZACIÓN DEL TÍTULO: Lana del rey » Corvette Api
+        const cleanTitle = (mediaResult.title || originalTitle).replace(/\.[^/.]+$/, "") // Quita extensión si existe
+        mediaResult.title = `${cleanTitle} » Corvette Api`
+        
         mediaResult.credit = "By Corvette para Shiroko";
         
-        // Enviar el mensaje solicitado vía WhatsApp
+        // ENVÍO DEL MENSAJE DE TEXTO SOLICITADO
         if (conn && jid) {
             await conn.sendMessage(jid, { text: "By Corvette para Shiroko" })
         }
