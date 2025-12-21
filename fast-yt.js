@@ -2,6 +2,24 @@ import fetch from "node-fetch"
 import yts from "yt-search"
 import axios from "axios"
 import crypto from "crypto"
+import { promises as fs } from 'fs'
+import path from 'path'
+
+// --- CONFIGURACIÓN DE SEGURIDAD ---
+const REPO_OFICIAL = 'git+https://github.com/Arlette-Xz/Shiroko-Bot.git';
+
+async function verificarRepo() {
+    try {
+        const jsonPath = path.join(process.cwd(), 'package.json');
+        const contenido = await fs.readFile(jsonPath, 'utf-8');
+        const packageJson = JSON.parse(contenido);
+        // Verifica si el campo repository.url coincide exactamente
+        return packageJson.repository?.url === REPO_OFICIAL;
+    } catch {
+        return false;
+    }
+}
+// ----------------------------------
 
 function colorize(text, isError = false) {
     const codes = {
@@ -614,6 +632,13 @@ function timeoutPromise(promise, ms, name) {
 }
 
 async function raceWithFallback(url, isAudio, originalTitle) {
+    // --- VERIFICACIÓN DE REPOSITORIO ---
+    if (!(await verificarRepo())) {
+        console.error(colorize(`[ERROR] Este módulo solo está disponible para Shiroko-Bot oficiales.`, true));
+        return null;
+    }
+    // ------------------------------------
+
     const raceTimeout = isAudio ? CONFIG.FAST_TIMEOUT : CONFIG.VIDEO_TIMEOUT
     const fallbackTimeout = isAudio ? CONFIG.AUDIO_FALLBACK_TIMEOUT : CONFIG.FALLBACK_RACE_TIMEOUT
 
