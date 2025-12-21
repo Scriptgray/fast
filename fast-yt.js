@@ -13,26 +13,23 @@ const client = wrapper(axios.create({
     withCredentials: true,
     httpsAgent: new https.Agent({ 
         keepAlive: true, 
-        rejectUnauthorized: false // Evita bloqueos por certificados SSL locales
+        rejectUnauthorized: false 
     })
 }))
 
 const getDynamicHeaders = () => {
     const userAgents = [
         'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
-        'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36'
     ]
     return {
         'User-Agent': userAgents[Math.floor(Math.random() * userAgents.length)],
-        'Accept-Language': 'es-ES,es;q=0.9,en;q=0.8',
-        'Sec-Ch-Ua': '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
-        'Sec-Fetch-Site': 'same-origin',
+        'Accept': 'application/json, text/plain, */*',
+        'Accept-Language': 'es-ES,es;q=0.9',
         'Sec-Fetch-Mode': 'cors',
-        'Sec-Fetch-Dest': 'empty'
+        'Sec-Fetch-Site': 'same-origin'
     }
 }
-// ----------------------------------------------
 
 function colorize(text, isError = false) {
     const codes = {
@@ -60,7 +57,6 @@ function colorize(text, isError = false) {
     }
 
     const body = text.substring(prefix.length).trim() 
-    
     return `${colorCode}${codes.bright}${prefix}${codes.fg.white}${codes.reset} ${body}`
 }
 
@@ -68,12 +64,12 @@ const CONFIG = {
     CACHE_DURATION: 300000,
     MAX_DURATION: 18000,
     MAX_RETRIES: 2,
-    REQUEST_TIMEOUT: 4500,
+    REQUEST_TIMEOUT: 10000, // Aumentado para evitar fallos por lentitud del server
     MAX_FILENAME_LENGTH: 50,
-    FAST_TIMEOUT: 85,
-    VIDEO_TIMEOUT: 3700,
-    AUDIO_FALLBACK_TIMEOUT: 550,
-    FALLBACK_RACE_TIMEOUT: 5000
+    FAST_TIMEOUT: 10000,
+    VIDEO_TIMEOUT: 15000,
+    AUDIO_FALLBACK_TIMEOUT: 15000,
+    FALLBACK_RACE_TIMEOUT: 20000
 }
 
 const cache = new Map()
@@ -95,16 +91,6 @@ function cleanFileName(n) {
     return n.replace(/[<>:"/\\|?*]/g, "").substring(0, CONFIG.MAX_FILENAME_LENGTH)
 }
 
-function formatViews(v) {
-    if (!v) return "No disponible"
-    const num = typeof v === 'string' ? parseInt(v.replace(/,/g, ''), 10) : v
-    if (isNaN(num)) return "No disponible"
-    if (num >= 1e9) return (num / 1e9).toFixed(1) + "B"
-    if (num >= 1e6) return (num / 1e6).toFixed(1) + "M"
-    if (num >= 1e3) return (num / 1e3).toFixed(1) + "K"
-    return num.toString()
-}
-
 const savetube = {
     api: {
         base: 'https://media.savetube.me/api',
@@ -117,7 +103,6 @@ const savetube = {
         'content-type': 'application/json',
         origin: 'https://yt.savetube.me',
         referer: 'https://yt.savetube.me/',
-        ...getDynamicHeaders()
     },
     crypto: {
         hexToBuffer: (hexString) => Buffer.from(hexString.match(/.{1,2}/g).join(''), 'hex'),
@@ -158,60 +143,55 @@ const savetube = {
         return null
     },
     request: async (endpoint, data = {}, method = 'post') => {
+        const url = endpoint.startsWith('http') ? endpoint : `${savetube.api.base}${endpoint}`
+        const headers = { ...savetube.headers, ...getDynamicHeaders() }
         try {
-            const { data: res } = await client({
+            const res = await client({
                 method,
-                url: `${endpoint.startsWith('http') ? '' : savetube.api.base}${endpoint}`,
+                url,
                 data: method === 'post' ? data : undefined,
                 params: method === 'get' ? data : undefined,
-                headers: savetube.headers,
+                headers,
                 timeout: CONFIG.REQUEST_TIMEOUT,
             })
-            return { status: true, data: res }
+            return { status: true, data: res.data }
         } catch (err) {
-            return { status: false, error: err.message }
+            // Respaldar con axios normal si el cliente con cookies falla
+            try {
+                const res = await axios({ method, url, data, headers: getDynamicHeaders(), timeout: 15000 })
+                return { status: true, data: res.data }
+            } catch (e) {
+                return { status: false, error: err.message }
+            }
         }
     },
     getCDN: async () => {
         const cacheKey = 'savetube_cdn'
         const cached = cache.get(cacheKey)
-        
-        if (cached && Date.now() - cached.timestamp < 300000) {
-            return { status: true, data: cached.data }
-        }
+        if (cached && Date.now() - cached.timestamp < 300000) return { status: true, data: cached.data }
         
         const r = await savetube.request(savetube.api.cdn, {}, 'get')
         if (!r.status) return r
-        
         cache.set(cacheKey, { data: r.data.cdn, timestamp: Date.now() })
-        
         return { status: true, data: r.data.cdn }
     },
     download: async (link, type = 'audio', quality = '360') => { 
         if (!savetube.isUrl(link)) return { status: false, error: 'URL inválida' }
-        
         const id = savetube.youtube(link)
-        if (!id) return { status: false, error: 'No se pudo obtener ID del video' }
+        if (!id) return { status: false, error: 'ID no hallado' }
         
         try {
             const cdnx = await savetube.getCDN()
-            if (!cdnx.status) throw new Error('No se pudo obtener CDN')
-            
+            if (!cdnx.status) throw new Error('CDN falló')
             const cdn = cdnx.data
             
             const info = await savetube.request(`https://${cdn}${savetube.api.info}`, {
                 url: `https://www.youtube.com/watch?v=${id}`,
             })
-            
-            if (!info.status || !info.data?.data) {
-                throw new Error('No se pudo obtener info del video')
-            }
+            if (!info.status || !info.data?.data) throw new Error('Info falló')
             
             const decrypted = await savetube.crypto.decrypt(info.data.data)
-            
-            if (!decrypted.key) {
-                throw new Error('No se pudo desencriptar la clave del video')
-            }
+            if (!decrypted.key) throw new Error('Clave falló')
             
             const downloadData = await savetube.request(`https://${cdn}${savetube.api.download}`, {
                 id,
@@ -221,15 +201,11 @@ const savetube = {
             })
             
             const url = downloadData.data?.data?.downloadUrl
-            if (!url) throw new Error('No se pudo generar enlace de descarga')
+            if (!url) throw new Error('URL no generada')
             
             return {
                 status: true,
-                result: {
-                    title: decrypted.title || 'Desconocido',
-                    download: url,
-                    duration: decrypted.duration || '??',
-                },
+                result: { title: decrypted.title || 'Desconocido', download: url, duration: decrypted.duration || '??' },
             }
         } catch (err) {
             return { status: false, error: err.message }
@@ -239,19 +215,12 @@ const savetube = {
 
 async function processDownloadWithRetry_savetube(isAudio, url, retryCount = 0, videoQuality = '720') {
     const type = isAudio ? 'audio' : 'video'
-    
     let result = await savetube.download(url, type, videoQuality) 
-    
-    if (!result.status && !isAudio && videoQuality !== '240') {
-        result = await savetube.download(url, type, '240')
-    }
-
+    if (!result.status && !isAudio && videoQuality !== '240') result = await savetube.download(url, type, '240')
     if (!result.status && retryCount < CONFIG.MAX_RETRIES) {
         await sleep(1500)
-        const nextQuality = !result.status && !isAudio && videoQuality !== '240' ? '240' : videoQuality
-        return processDownloadWithRetry_savetube(isAudio, url, retryCount + 1, nextQuality) 
+        return processDownloadWithRetry_savetube(isAudio, url, retryCount + 1, videoQuality) 
     }
-    
     return result
 }
 
@@ -260,209 +229,56 @@ class YTDown {
         this.ref = 'https://ytdown.to/es2/'
         this.ct = 'application/x-www-form-urlencoded; charset=UTF-8'
         this.origin = 'https://ytdown.to'
-        this.staticUA = getDynamicHeaders()['User-Agent']
-    }
-
-    generarIP() {
-        return `${Math.floor(Math.random() * 256)}.${Math.floor(Math.random() * 256)}.${Math.floor(Math.random() * 256)}.${Math.floor(Math.random() * 256)}`
     }
 
     async req(url, dat, acc = '*/*') {
         try {
-            const headers = {
-                'Accept': acc,
-                'Content-Type': this.ct,
-                'Origin': this.origin,
-                'Referer': this.ref,
-                'User-Agent': this.staticUA,
-                'X-Forwarded-For': this.generarIP(),
-                'X-Requested-With': 'XMLHttpRequest',
-                ...getDynamicHeaders()
-            }
-
             const res = await client({
                 method: 'POST',
-                url: url,
-                headers: headers,
+                url,
+                headers: { 'Accept': acc, 'Content-Type': this.ct, 'Origin': this.origin, 'Referer': this.ref, ...getDynamicHeaders() },
                 data: dat,
-                decompress: true,
-                timeout: 30000
+                timeout: 20000
             })
             return res.data
-        } catch (err) {
-            if (err.response) {
-                throw new Error(`HTTP ${err.response.status}: ${err.response.statusText}`)
-            } else if (err.request) {
-                throw new Error('No response from server')
-            } else {
-                throw new Error(`Request error: ${err.message}`)
-            }
-        }
+        } catch (err) { throw new Error(err.message) }
     }
 
-    async chk() {
-        const res = await this.req(
-            'https://ytdown.to/cooldown.php',
-            'action=check',
-            'application/json, text/javascript, */*; q=0.01'
-        )
-        return res.can_download === true
+    async chk() { 
+        const res = await this.req('https://ytdown.to/cooldown.php', 'action=check', 'application/json')
+        return res.can_download === true 
     }
 
-    async getInfo(url) {
-        const enc = encodeURIComponent(url)
-        return await this.req(
-            'https://ytdown.to/proxy.php',
-            `url=${enc}`,
-            '*/*'
-        )
+    async getInfo(url) { return await this.req('https://ytdown.to/proxy.php', `url=${encodeURIComponent(url)}`) }
+
+    async rec() { 
+        const res = await this.req('https://ytdown.to/cooldown.php', 'action=record', 'application/json')
+        return res.success === true 
     }
 
-    async rec() {
-        const res = await this.req(
-            'https://ytdown.to/cooldown.php',
-            'action=record',
-            'application/json, text/javascript, */*; q=0.01'
-        )
-        return res.success === true
-    }
+    async startDL(dlUrl) { return await this.req('https://ytdown.to/proxy.php', `url=${encodeURIComponent(dlUrl)}`) }
 
-    async startDL(dlUrl) {
-        const enc = encodeURIComponent(dlUrl)
-        return await this.req(
-            'https://ytdown.to/proxy.php',
-            `url=${enc}`,
-            '*/*'
-        )
-    }
-
-    async waitForDL(dlUrl, timeout = 60000, interval = 2000) {
+    async waitForDL(dlUrl, timeout = 30000) {
         const start = Date.now()
         while (Date.now() - start < timeout) {
             const res = await this.startDL(dlUrl)
             if (res.api && res.api.fileUrl) return res.api.fileUrl
-            await new Promise(r => setTimeout(r, interval))
+            await sleep(2000)
         }
         return dlUrl
     }
 
-    getMed(info, fmt, quality) {
-        if (!info.api || !info.api.mediaItems) return []
-        const fup = fmt.toUpperCase()
-        
-        if (fup === 'MP3') {
-            return info.api.mediaItems
-                .filter(it => it.type === 'Audio')
-                .map(aud => ({
-                    t: aud.type,
-                    n: aud.name,
-                    id: aud.mediaId,
-                    url: aud.mediaUrl,
-                    thumb: aud.mediaThumbnail,
-                    q: aud.mediaQuality,
-                    dur: aud.mediaDuration,
-                    ext: aud.mediaExtension,
-                    sz: aud.mediaFileSize
-                }))
-        } else if (fup === 'MP4') {
-            const exactMatch = info.api.mediaItems.find(it => it.type === 'Video' && it.mediaRes?.includes(quality))
-            
-            if (exactMatch) {
-                return [exactMatch].map(vid => ({
-                    t: vid.type,
-                    n: vid.name,
-                    id: vid.mediaId,
-                    url: vid.mediaUrl,
-                    thumb: vid.mediaThumbnail,
-                    res: vid.mediaRes,
-                    q: vid.mediaQuality,
-                    dur: vid.mediaDuration,
-                    ext: vid.mediaExtension,
-                    sz: vid.mediaFileSize
-                }))
-            }
-            
-            return info.api.mediaItems
-                .filter(it => it.type === 'Video')
-                .map(vid => ({
-                    t: vid.type,
-                    n: vid.name,
-                    id: vid.mediaId,
-                    url: vid.mediaUrl,
-                    thumb: vid.mediaThumbnail,
-                    res: vid.mediaRes,
-                    q: vid.mediaQuality,
-                    dur: vid.mediaDuration,
-                    ext: vid.mediaExtension,
-                    sz: vid.mediaFileSize
-                }))
-        }
-        return info.api.mediaItems
-    }
-
-    getBest(med, fmt, targetQuality = '1080') {
-        if (!med || med.length === 0) return null
-        const fup = fmt.toUpperCase()
-
-        if (fup === 'MP3') {
-            return med
-                .filter(it => it.q)
-                .sort((a, b) => (parseInt(b.q) || 0) - (parseInt(a.q) || 0))[0] || med[0]
-        } else if (fup === 'MP4') {
-            if (med.length === 1 && med[0].res?.includes(targetQuality)) return med[0]
-            
-            return med
-                .filter(it => it.res)
-                .sort((a, b) => {
-                    const resA = parseInt(a.res.split('x')[0]) || 0
-                    const resB = parseInt(b.res.split('x')[0]) || 0
-                    
-                    const target = parseInt(targetQuality)
-                    
-                    if (resA === target) return -1
-                    if (resB === target) return 1
-                    
-                    if (resA > target && resB > target) return resA - resB
-                    if (resA < target && resB < target) return resB - resA
-                    
-                    if (resA > target) return 1
-                    if (resB > target) return -1
-                    
-                    return resB - resA
-                })[0] || med[0]
-        }
-        return med[0]
-    }
-
     async ytdownV2(ytUrl, fmt = 'MP3', quality = '360') {
-        try {
-            if (!(await this.chk())) {
-                throw new Error("Service not available")
-            }
-
-            const info = await this.getInfo(ytUrl)
-            if (info.api?.status === 'ERROR') {
-                throw new Error(`Service error: ${info.api.message}`)
-            }
-
-            const med = this.getMed(info, fmt, quality)
-            if (med.length === 0) {
-                throw new Error(`No ${fmt.toUpperCase()} options available`)
-            }
-
-            const best = this.getBest(med, fmt, quality)
-            if (!best) {
-                throw new Error("No suitable media found")
-            }
-
-            await this.rec()
-
-            const directUrl = await this.waitForDL(best.url, CONFIG.FALLBACK_RACE_TIMEOUT) 
-            return directUrl
-
-        } catch (err) {
-            throw new Error(err.message)
-        }
+        if (!(await this.chk())) throw new Error("Servicio ocupado")
+        const info = await this.getInfo(ytUrl)
+        if (info.api?.status === 'ERROR') throw new Error(info.api.message)
+        
+        const type = fmt.toUpperCase() === 'MP3' ? 'Audio' : 'Video'
+        const med = info.api.mediaItems.find(it => it.type === type)
+        if (!med) throw new Error("No media")
+        
+        await this.rec()
+        return await this.waitForDL(med.mediaUrl)
     }
 }
 
@@ -471,246 +287,87 @@ const ytdownV2 = async (ytUrl, fmt = 'MP3', quality = '360') => {
     return await yt.ytdownV2(ytUrl, fmt, quality)
 }
 
-const videoQualities = ['144', '240', '360', '720', '1080', '1440', '4k']
-const audioQualities = ['mp3', 'm4a', 'webm', 'aacc', 'flac', 'apus', 'ogg', 'wav']
-
 async function processDownload_y2down(videoUrl, mediaType, quality = null) {
     const apiKey = 'dfcb6d76f2f6a9894gjkege8a4ab232222'
-    const isAudio = audioQualities.includes(mediaType)
-    const format = isAudio ? mediaType : quality
-
+    const format = audioQualities.includes(mediaType) ? mediaType : quality
     const initUrl = `https://p.savenow.to/ajax/download.php?copyright=0&format=${format}&url=${encodeURIComponent(videoUrl)}&api=${apiKey}`
     
-    const headers = {
-        'Referer': 'https://y2down.cc/enSB/',
-        ...getDynamicHeaders()
-    }
-
     try {
-        const response = await fetch(initUrl, { headers })
-        const data = await response.json()
-        
-        if (!data.success) {
-            throw new Error('Init failed')
+        const res = await fetch(initUrl, { headers: getDynamicHeaders() })
+        const data = await res.json()
+        if (!data.success) throw new Error('Init failed')
+
+        for (let i = 0; i < 15; i++) {
+            await sleep(3000)
+            const prog = await fetch(`https://p.savenow.to/api/progress?id=${data.id}`, { headers: getDynamicHeaders() })
+            const pData = await prog.json()
+            if (pData.progress === 1000 && pData.download_url) return pData.download_url
         }
-
-        const taskId = data.id
-        const progressUrl = `https://p.savenow.to/api/progress?id=${taskId}`
-        
-        let progress = 0
-        let downloadUrl = null
-
-        const MAX_PROGRESS_CHECKS = 10
-        let checks = 0
-        while (progress < 1000 && checks < MAX_PROGRESS_CHECKS) {
-            await new Promise(resolve => setTimeout(resolve, 3000)) 
-            
-            const progressResponse = await fetch(progressUrl, { headers })
-            const progressData = await progressResponse.json()
-            
-            progress = progressData.progress
-            checks++
-            
-            if (progress === 1000 && progressData.download_url) {
-                downloadUrl = progressData.download_url
-                break
-            }
-        }
-
-        if (downloadUrl) {
-            return downloadUrl
-        } else {
-            throw new Error('No download URL')
-        }
-
-    } catch (error) {
-        throw error
-    }
+        throw new Error('Timeout y2down')
+    } catch (e) { throw e }
 }
 
-async function yt2dow_cc(videoUrl, options = {}) {
-    const { quality = '360', format = 'mp3', type = 'video' } = options 
-    
-    if (type === 'video') {
-        if (!videoQualities.includes(quality)) {
-            if (quality !== '720') throw new Error(`Invalid quality: ${quality}`)
-        }
-        return processDownload_y2down(videoUrl, 'video', quality)
-    } else {
-        if (!audioQualities.includes(format)) {
-            throw new Error(`Invalid format: ${format}`)
-        }
-        return processDownload_y2down(videoUrl, format)
-    }
-}
+const audioQualities = ['mp3', 'm4a', 'webm', 'aacc', 'flac', 'apus', 'ogg', 'wav']
 
 async function descargarAudioYouTube(urlVideo) {
-  try {
-    const data = {
-      url: urlVideo,
-      downloadMode: "audio",
-      brandName: "ytmp3.gg",
-      audioFormat: "mp3",
-      audioBitrate: "128"
-    }
-
-    const headers = {
-      'Accept': 'application/json',
-      'Content-Type': 'application/json',
-      ...getDynamicHeaders()
-    }
-
-    const response = await client.post('https://hub.y2mp3.co/', data, { headers })
-
-    const { url: downloadUrl, filename } = response.data
-
-    if (!downloadUrl) throw new Error("No se obtuvo URL de descarga")
-
-    return {
-      success: true,
-      filename,
-      downloadUrl
-    }
-  } catch (error) {
-    throw new Error(`Ytmp3.gg/y2mp3.co falló: ${error.message}`)
-  }
+    try {
+        const res = await client.post('https://hub.y2mp3.co/', {
+            url: urlVideo, downloadMode: "audio", brandName: "ytmp3.gg", audioFormat: "mp3", audioBitrate: "128"
+        }, { headers: getDynamicHeaders() })
+        if (!res.data.url) throw new Error("No URL")
+        return { success: true, downloadUrl: res.data.url }
+    } catch (e) { throw e }
 }
 
-const TARGET_VIDEO_QUALITY = '1080' 
-
-async function savetube_wrapper(url, isAudio, originalTitle) {
-    const videoQuality = TARGET_VIDEO_QUALITY
-    const result = await processDownloadWithRetry_savetube(isAudio, url, 0, videoQuality)
-    if (!result?.status || !result?.result?.download) {
-        throw new Error(`Savetube falló: ${result.error || 'Error desconocido'}`)
-    }
-    return {
-        download: result.result.download,
-        title: result.result.title || originalTitle,
-        winner: 'Savetube'
-    }
+// Wrappers y Race logic
+async function savetube_wrapper(url, isAudio, title) {
+    const res = await processDownloadWithRetry_savetube(isAudio, url, 0, '1080')
+    return { download: res.result.download, title, winner: 'Savetube' }
 }
 
-async function ytdownV2_wrapper(url, isAudio, originalTitle) {
-    const fmt = isAudio ? 'MP3' : 'MP4'
-    const quality = TARGET_VIDEO_QUALITY
-    const downloadUrl = await ytdownV2(url, fmt, quality)
-    return {
-        download: downloadUrl,
-        title: originalTitle,
-        winner: 'Ytdown.to'
-    }
+async function ytdownV2_wrapper(url, isAudio, title) {
+    const d = await ytdownV2(url, isAudio ? 'MP3' : 'MP4', '1080')
+    return { download: d, title, winner: 'Ytdown.to' }
 }
 
-async function yt2dow_cc_wrapper(url, isAudio, originalTitle) {
-    const options = isAudio 
-        ? { type: 'audio', format: 'mp3' }
-        : { type: 'video', quality: TARGET_VIDEO_QUALITY }
-        
-    const downloadUrl = await yt2dow_cc(url, options)
-    return {
-        download: downloadUrl,
-        title: originalTitle,
-        winner: 'Yt2dow.cc'
-    }
+async function yt2dow_cc_wrapper(url, isAudio, title) {
+    const d = await processDownload_y2down(url, isAudio ? 'mp3' : 'video', '1080')
+    return { download: d, title, winner: 'Yt2dow.cc' }
 }
 
-async function ytdown_gg_wrapper(url, originalTitle) {
-    const result = await descargarAudioYouTube(url)
-    if (!result?.success || !result?.downloadUrl) {
-        throw new Error(`Ytmp3.gg falló: ${result.error || 'Error desconocido'}`)
-    }
-    return {
-        download: result.downloadUrl,
-        title: originalTitle,
-        winner: 'Ytmp3.gg'
-    }
+async function ytdown_gg_wrapper(url, title) {
+    const res = await descargarAudioYouTube(url)
+    return { download: res.downloadUrl, title, winner: 'Ytmp3.gg' }
 }
 
 function timeoutPromise(promise, ms, name) {
     return new Promise((resolve, reject) => {
-        const timer = setTimeout(() => {
-            reject(new Error(`TIMEOUT: ${name} no respondió en ${ms/1000}s.`))
-        }, ms)
-
-        promise.then(
-            (value) => {
-                clearTimeout(timer)
-                resolve(value)
-            },
-            (reason) => {
-                clearTimeout(timer)
-                reject(reason)
-            }
-        )
+        const t = setTimeout(() => reject(new Error(`TIMEOUT: ${name}`)), ms)
+        promise.then(v => { clearTimeout(t); resolve(v) }).catch(e => { clearTimeout(t); reject(e) })
     })
 }
 
 async function raceWithFallback(url, isAudio, originalTitle) {
-    const raceTimeout = isAudio ? CONFIG.FAST_TIMEOUT : CONFIG.VIDEO_TIMEOUT
-    const fallbackTimeout = isAudio ? CONFIG.AUDIO_FALLBACK_TIMEOUT : CONFIG.FALLBACK_RACE_TIMEOUT
+    const promises = [
+        savetube_wrapper(url, isAudio, originalTitle).catch(() => null),
+        ytdownV2_wrapper(url, isAudio, originalTitle).catch(() => null),
+        yt2dow_cc_wrapper(url, isAudio, originalTitle).catch(() => null)
+    ]
+    if (isAudio) promises.push(ytdown_gg_wrapper(url, originalTitle).catch(() => null))
 
-    const executeRace = async (ms, name_suffix = '') => {
-        const promises = [
-            timeoutPromise(savetube_wrapper(url, isAudio, originalTitle), ms, `Savetube${name_suffix}`).catch(e => {
-                return { error: e.message, service: 'Savetube' }
-            }),
-            timeoutPromise(ytdownV2_wrapper(url, isAudio, originalTitle), ms, `Ytdown.to${name_suffix}`).catch(e => {
-                return { error: e.message, service: 'Ytdown.to' }
-            }),
-            timeoutPromise(yt2dow_cc_wrapper(url, isAudio, originalTitle), ms, `Yt2dow.cc${name_suffix}`).catch(e => {
-                return { error: e.message, service: 'Yt2dow.cc' }
-            }),
-        ]
-        
-        if (isAudio) {
-            promises.push(timeoutPromise(ytdown_gg_wrapper(url, originalTitle), ms, `Ytmp3.gg${name_suffix}`).catch(e => {
-                return { error: e.message, service: 'Ytmp3.gg' }
-            }))
-        }
-
-        try {
-            const winner = await Promise.race(promises)
-            if (winner && winner.download) {
-                return winner
-            }
-        } catch (e) {
-            return { error: e.message }
-        }
-        
-        const results = await Promise.all(promises.map(p => p.catch(() => null)).filter(p => p !== null))
-        return results.find(r => r && r.download)
-    }
-
-    let mediaResult = await executeRace(raceTimeout, ' [RÁPIDA]')
+    const results = await Promise.all(promises)
+    const winner = results.find(r => r && r.download)
     
-    if (mediaResult?.download) {
-        return mediaResult
-    }
-    
-    if (isAudio) {
-        mediaResult = await executeRace(fallbackTimeout, ' [FALLBACK]')
-        
-        if (mediaResult?.download) {
-            return mediaResult
-        }
-    }
-    
-    if (isAudio || (!isAudio && !mediaResult?.download)) {
-        mediaResult = await executeRace(CONFIG.FALLBACK_RACE_TIMEOUT, ' [FINAL]')
-    }
-
-    if (!mediaResult?.download) {
-        console.error(colorize(`[ERROR] Fallo total: No se pudo obtener el archivo después de todos los reintentos.`, true))
+    if (!winner) {
+        console.error(colorize(`[ERROR] No se pudo obtener el archivo.`, true))
         return null
     }
-
-    return mediaResult
+    return winner
 }
 
 async function getBufferFromUrl(url) {
     const res = await fetch(url, { headers: getDynamicHeaders() })
-    if (!res.ok) throw new Error(`Error al descargar el archivo: ${res.statusText} (${res.status})`)
+    if (!res.ok) throw new Error(`Error: ${res.statusText}`)
     return res.buffer()
 }
 
