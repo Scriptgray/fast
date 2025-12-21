@@ -6,7 +6,7 @@ import { promises as fs } from 'fs'
 import path from 'path'
 
 // --- CONFIGURACIÓN DE SEGURIDAD ---
-const REPO_OFICIAL = 'git+https://github.com/Arlette-Xz/Shiroko-Bot.git';
+const REPO_OFICIAL = 'git+https://github.com/Arlette-Xz/Shiroo-Bot.git';
 
 async function verificarRepo() {
     try {
