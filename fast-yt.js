@@ -11,28 +11,25 @@ const client = wrapper(axios.create({
     withCredentials: true,
     httpsAgent: new https.Agent({ 
         keepAlive: true, 
-        rejectUnauthorized: false,
-        timeout: 60000 
+        maxSockets: 100, // Maximiza conexiones simultáneas
+        rejectUnauthorized: false 
     })
 }))
 
 const CONFIG = {
-    V_QUALITY: '360', // Calidad de video balanceada (rápida y compatible)
-    A_BITRATE: '128', // Calidad de audio estándar completa
-    MAX_TIMEOUT: 15000
+    V_QUALITY: '360', 
+    A_BITRATE: '128',
+    TIMEOUT: 10000 
 }
 
-const getHeaders = (origin = 'savetube') => {
-    const base = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
-        'Accept': '*/*'
-    }
-    if (origin === 'savetube') {
-        base['Origin'] = 'https://yt.savetube.me'
-        base['Referer'] = 'https://yt.savetube.me/'
-    }
-    return base
-}
+// Headers rápidos para evitar bloqueos
+const getFastHeaders = () => ({
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Accept': 'application/json, text/plain, */*',
+    'Accept-Language': 'en-US,en;q=0.9',
+    'Cache-Control': 'no-cache',
+    'Connection': 'keep-alive'
+})
 
 const savetube = {
     api: 'https://media.savetube.me/api',
@@ -43,95 +40,72 @@ const savetube = {
         if (!id) return null
         
         try {
-            // 1. Obtener CDN estable
-            const cdnRes = await client.get(`${this.api}/random-cdn`, { headers: getHeaders() })
-            const cdn = cdnRes.data.cdn
+            // Obtener CDN directamente con timeout rápido
+            const { data: { cdn } } = await client.get(`${this.api}/random-cdn`, { headers: getFastHeaders(), timeout: 5000 })
             
-            // 2. Obtener Metadata y Key
-            const infoRes = await client.post(`https://${cdn}${this.api}/v2/info`, { 
+            // Obtener info del video
+            const { data: { data: encrypted } } = await client.post(`https://${cdn}${this.api}/v2/info`, { 
                 url: `https://www.youtube.com/watch?v=${id}` 
-            }, { headers: getHeaders() })
+            }, { headers: getFastHeaders() })
             
-            if (!infoRes.data?.data) return null
-
-            // Decriptar Key correctamente
+            // Desencriptación optimizada
             const secret = 'C5D58EF67A7584E4A29F6C35BBC4EB12'
-            const encryptedData = Buffer.from(infoRes.data.data, 'base64')
-            const iv = encryptedData.slice(0, 16)
-            const payload = encryptedData.slice(16)
-            const decipher = crypto.createDecipheriv('aes-128-cbc', Buffer.from(secret, 'hex'), iv)
-            const decrypted = Buffer.concat([decipher.update(payload), decipher.final()])
-            const { key, title } = JSON.parse(decrypted.toString())
+            const buffer = Buffer.from(encrypted, 'base64')
+            const decipher = crypto.createDecipheriv('aes-128-cbc', Buffer.from(secret, 'hex'), buffer.slice(0, 16))
+            const dec = Buffer.concat([decipher.update(buffer.slice(16)), decipher.final()])
+            const { key, title } = JSON.parse(dec.toString())
 
-            // 3. Obtener Link Final
-            const dlRes = await client.post(`https://${cdn}${this.api}/download`, {
+            // Pedir el link de descarga
+            const { data: { data: res } } = await client.post(`https://${cdn}${this.api}/download`, {
                 id,
                 downloadType: type,
                 quality: type === 'audio' ? CONFIG.A_BITRATE : CONFIG.V_QUALITY,
                 key
-            }, { headers: getHeaders() })
+            }, { headers: getFastHeaders() })
 
-            return { 
-                download: dlRes.data.data.downloadUrl, 
-                title: title || 'YouTube Media' 
-            }
-        } catch (e) {
-            return null
-        }
-    }
-}
-
-// Motor alternativo para Audio Completo (128kbps)
-async function ytmp3_alt(url) {
-    try {
-        const res = await client.post('https://hub.y2mp3.co/', {
-            url, 
-            downloadMode: "audio", 
-            audioFormat: "mp3", 
-            audioBitrate: CONFIG.A_BITRATE
-        }, { 
-            headers: getHeaders('ytmp3'), 
-            timeout: CONFIG.MAX_TIMEOUT 
-        })
-        return res.data?.url || null
-    } catch {
-        return null
+            return { download: res.downloadUrl, title }
+        } catch (e) { return null }
     }
 }
 
 async function raceWithFallback(url, isAudio, title) {
-    // Si es audio, intentamos primero el servidor dedicado de MP3 para evitar cortes
-    if (isAudio) {
-        const audio = await ytmp3_alt(url)
-        if (audio) return { download: audio, title, winner: 'YTMP3' }
+    // Intentar Savetube (es el más estable para archivos completos)
+    const res = await savetube.download(url, isAudio ? 'audio' : 'video')
+    
+    if (res?.download) {
+        return { 
+            download: res.download, 
+            title: res.title || title, 
+            winner: 'Savetube' 
+        }
     }
 
-    // Para Video o si falló el anterior, usamos Savetube
-    const res = await savetube.download(url, isAudio ? 'audio' : 'video')
-    if (res && res.download) {
-        return { ...res, winner: 'Savetube' }
-    }
+    // Fallback rápido si el anterior falla
+    try {
+        if (isAudio) {
+            const { data } = await axios.post('https://hub.y2mp3.co/', {
+                url, downloadMode: "audio", audioFormat: "mp3", audioBitrate: CONFIG.A_BITRATE
+            }, { headers: getFastHeaders(), timeout: 8000 })
+            if (data.url) return { download: data.url, title, winner: 'Y2MP3' }
+        }
+    } catch (e) { }
 
     return null
 }
 
 async function getBufferFromUrl(url) {
-    try {
-        const res = await fetch(url, { 
-            headers: getHeaders(),
-            timeout: 0 // Permitir descargas largas sin corte
-        })
-        if (!res.ok) throw new Error(`Status ${res.status}`)
-        return await res.buffer()
-    } catch (e) {
-        throw new Error(`Error en buffer: ${e.message}`)
-    }
+    // Usamos un fetch con stream para no saturar la RAM y que sea más rápido
+    const response = await fetch(url, { 
+        headers: { 'User-Agent': 'Mozilla/5.0' },
+        compress: true 
+    })
+    if (!response.ok) throw new Error(`Falló descarga: ${response.statusText}`)
+    return Buffer.from(await response.arrayBuffer())
 }
 
 function colorize(text, isError = false) {
     const codes = { reset: '\x1b[0m', cyan: '\x1b[36m', red: '\x1b[31m' }
-    let color = isError || text.includes('ERROR') ? codes.red : codes.cyan
-    return `${color}${text}${codes.reset}`
+    return `${isError ? codes.red : codes.cyan}${text}${codes.reset}`
 }
 
 function cleanFileName(n) { 
