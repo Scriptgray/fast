@@ -2,16 +2,15 @@ import fetch from "node-fetch"
 import axios from "axios"
 import crypto from "crypto"
 
-// AGENTS PARA ROTACIÓN Y EVITAR BLOQUEOS
+// AGENTS LIGEROS PARA MÁXIMA COMPATIBILIDAD
 const AGENTS = [
-    'Mozilla/5.0 (Linux; Android 10; SM-G981B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Mobile Safari/537.36',
-    'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1',
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36'
+    'Mozilla/5.0 (Linux; Android 10; SM-A205U) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.5845.163 Mobile Safari/537.36',
+    'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1'
 ];
 
 const CONFIG = {
-    MAX_FILENAME_LENGTH: 50,
-    BUFFER_TIMEOUT: 120000 // 2 minutos máximo
+    MAX_FILENAME_LENGTH: 40,
+    BUFFER_TIMEOUT: 180000, 
 }
 
 function colorize(text, isError = false) {
@@ -29,79 +28,66 @@ function cleanFileName(n) {
     return n.replace(/[<>:"/\\|?*]/g, "").substring(0, CONFIG.MAX_FILENAME_LENGTH);
 }
 
-// LÓGICA DE DESCARGA SAVETUBE (LA MÁS ESTABLE)
-const savetube = {
-    decrypt: (enc) => {
-        const secretKey = 'C5D58EF67A7584E4A29F6C35BBC4EB12';
-        const data = Buffer.from(enc, 'base64');
-        const decipher = crypto.createDecipheriv('aes-128-cbc', Buffer.from(secretKey, 'hex'), data.slice(0, 16));
-        const decrypted = Buffer.concat([decipher.update(data.slice(16)), decipher.final()]);
-        return JSON.parse(decrypted.toString());
+const services = {
+    // MÉTODO AUDIO RÁPIDO (YTMP3 MODIFICADO)
+    fastAudio: async (url) => {
+        const { data } = await axios.post('https://hub.y2mp3.co/', {
+            url, downloadMode: "audio", brandName: "ytmp3.gg", audioFormat: "mp3", audioBitrate: "128"
+        }, { timeout: 10000 });
+        return { download: data.url, winner: 'Ytmp3' };
     },
-    download: async (url, isAudio) => {
-        const id = url.match(/v=([a-zA-Z0-9_-]{11})|be\/([a-zA-Z0-9_-]{11})|shorts\/([a-zA-Z0-9_-]{11})/)?.[1] || 
-                   url.match(/v=([a-zA-Z0-9_-]{11})|be\/([a-zA-Z0-9_-]{11})|shorts\/([a-zA-Z0-9_-]{11})/)?.[2] || 
-                   url.match(/v=([a-zA-Z0-9_-]{11})|be\/([a-zA-Z0-9_-]{11})|shorts\/([a-zA-Z0-9_-]{11})/)?.[3];
 
+    // MÉTODO VIDEO ESTABLE (SAVETUBE 360p - MÁXIMA VELOCIDAD)
+    stableVideo: async (url) => {
+        const id = url.match(/v=([a-zA-Z0-9_-]{11})|be\/([a-zA-Z0-9_-]{11})|shorts\/([a-zA-Z0-9_-]{11})/)?.[1] || url.match(/v=([a-zA-Z0-9_-]{11})|be\/([a-zA-Z0-9_-]{11})|shorts\/([a-zA-Z0-9_-]{11})/)?.[2] || url.match(/v=([a-zA-Z0-9_-]{11})|be\/([a-zA-Z0-9_-]{11})|shorts\/([a-zA-Z0-9_-]{11})/)?.[3];
         const { data: cdnRes } = await axios.get('https://media.savetube.me/api/random-cdn');
         const { data: infoRes } = await axios.post(`https://${cdnRes.cdn}/api/v2/info`, { url: `https://www.youtube.com/watch?v=${id}` });
-        const info = savetube.decrypt(infoRes.data);
+        
+        const secretKey = 'C5D58EF67A7584E4A29F6C35BBC4EB12';
+        const data = Buffer.from(infoRes.data, 'base64');
+        const decipher = crypto.createDecipheriv('aes-128-cbc', Buffer.from(secretKey, 'hex'), data.slice(0, 16));
+        const info = JSON.parse(Buffer.concat([decipher.update(data.slice(16)), decipher.final()]).toString());
 
-        // CALIDADES ÓPTIMAS: Audio 128 (Ligero) | Video 480 (Seguro)
         const { data: dlRes } = await axios.post(`https://${cdnRes.cdn}/api/download`, {
-            id, 
-            downloadType: isAudio ? 'audio' : 'video', 
-            quality: isAudio ? '128' : '480', 
-            key: info.key
+            id, downloadType: 'video', quality: '360', key: info.key
         });
-
-        return { download: dlRes.data.downloadUrl, title: info.title };
+        return { download: dlRes.data.downloadUrl, title: info.title, winner: 'Savetube' };
     }
 };
 
 async function raceWithFallback(url, isAudio, originalTitle) {
-    console.log(colorize(`[BUSCANDO] Preparando ${isAudio ? 'Audio liviano' : 'Video estable'}`));
+    console.log(colorize(`[BUSCANDO] Optimizando recursos para ${isAudio ? 'Audio' : 'Video'}`));
     try {
-        const res = await savetube.download(url, isAudio);
-        return { ...res, winner: 'Savetube' };
+        const res = isAudio ? await services.fastAudio(url) : await services.stableVideo(url);
+        return { ...res, title: res.title || originalTitle };
     } catch (e) {
-        console.error(colorize(`[ERROR] Servicio no disponible temporalmente.`, true));
+        console.error(colorize(`[ERROR] Error en la solicitud: ${e.message}`, true));
         return null;
     }
 }
 
-// GETBUFFER REPARADO: SISTEMA ANTI-RUNTIME Y ANTI-BLOQUEO
+// GETBUFFER CON LIMITACIÓN DE FLUJO (EVITA EL RUNTIME)
 async function getBufferFromUrl(url) {
-    let lastError;
-    
-    // Intenta con 3 identidades diferentes si falla
-    for (const agent of AGENTS) {
-        try {
-            const res = await fetch(url, {
-                headers: {
-                    'User-Agent': agent,
-                    'Accept': '*/*',
-                    'Referer': 'https://yt.savetube.me/',
-                    'Connection': 'keep-alive'
-                },
-                redirect: 'follow',
-                timeout: CONFIG.BUFFER_TIMEOUT
-            });
+    try {
+        const response = await axios({
+            method: 'get',
+            url: url,
+            responseType: 'arraybuffer', // Usamos arraybuffer de axios que es más eficiente en memoria que fetch.buffer()
+            headers: {
+                'User-Agent': AGENTS[0],
+                'Referer': 'https://yt.savetube.me/'
+            },
+            timeout: CONFIG.BUFFER_TIMEOUT,
+            maxContentLength: 100 * 1024 * 1024, // Límite de 100MB para evitar que el bot explote
+        });
 
-            if (!res.ok) throw new Error(`HTTP ${res.status}`);
-            
-            const buffer = await res.buffer();
-            
-            // Si el buffer es basura (menos de 30KB), forzamos reintento
-            if (buffer.length < 30000) throw new Error("Archivo corrupto");
-            
-            return buffer;
-        } catch (e) {
-            lastError = e;
-            await new Promise(r => setTimeout(r, 1000));
-        }
+        if (response.data.length < 20000) throw new Error("Archivo corrupto/vacío");
+        
+        return Buffer.from(response.data);
+    } catch (e) {
+        console.error(colorize(`[ERROR] No se pudo descargar el buffer: ${e.message}`, true));
+        throw e;
     }
-    throw lastError;
 }
 
 export { raceWithFallback, cleanFileName, getBufferFromUrl, colorize };
