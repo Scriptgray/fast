@@ -9,32 +9,31 @@ const jar = new CookieJar()
 const client = wrapper(axios.create({ 
     jar, 
     withCredentials: true,
-    httpsAgent: new https.Agent({ keepAlive: true, rejectUnauthorized: false })
+    httpsAgent: new https.Agent({ 
+        keepAlive: true, 
+        rejectUnauthorized: false,
+        timeout: 60000 
+    })
 }))
 
-const getHeaders = () => ({
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'Accept': 'application/json, text/plain, */*',
-    'Origin': 'https://yt.savetube.me',
-    'Referer': 'https://yt.savetube.me/'
-})
-
 const CONFIG = {
-    V_QUALITY: '360',
-    A_BITRATE: '128',
-    WAIT_TIME: 2500 // Tiempo entre chequeos de descarga
+    V_QUALITY: '360', // Calidad de video balanceada (rápida y compatible)
+    A_BITRATE: '128', // Calidad de audio estándar completa
+    MAX_TIMEOUT: 15000
 }
 
-// --- UTILS ---
-function colorize(text, isError = false) {
-    const codes = { reset: '\x1b[0m', cyan: '\x1b[36m', red: '\x1b[31m' }
-    let color = text.includes('ERROR') || isError ? codes.red : codes.cyan
-    return `${color}${text}${codes.reset}`
+const getHeaders = (origin = 'savetube') => {
+    const base = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+        'Accept': '*/*'
+    }
+    if (origin === 'savetube') {
+        base['Origin'] = 'https://yt.savetube.me'
+        base['Referer'] = 'https://yt.savetube.me/'
+    }
+    return base
 }
 
-const sleep = (ms) => new Promise(r => setTimeout(r, ms))
-
-// --- MÓDULO SAVETUBE (VIDEO Y AUDIO) ---
 const savetube = {
     api: 'https://media.savetube.me/api',
     youtube: (url) => url.match(/(?:youtu\.be\/|youtube\.com\/(?:watch\?v=|embed\/|shorts\/|live\/))([a-zA-Z0-9_-]{11})/)?.[1],
@@ -44,21 +43,27 @@ const savetube = {
         if (!id) return null
         
         try {
-            // 1. Obtener CDN aleatorio
+            // 1. Obtener CDN estable
             const cdnRes = await client.get(`${this.api}/random-cdn`, { headers: getHeaders() })
             const cdn = cdnRes.data.cdn
             
-            // 2. Obtener Info y Key
-            const infoRes = await client.post(`https://${cdn}${this.api}/v2/info`, { url: `https://www.youtube.com/watch?v=${id}` }, { headers: getHeaders() })
+            // 2. Obtener Metadata y Key
+            const infoRes = await client.post(`https://${cdn}${this.api}/v2/info`, { 
+                url: `https://www.youtube.com/watch?v=${id}` 
+            }, { headers: getHeaders() })
             
-            // Decriptar Key (AES-128-CBC)
-            const keyRaw = 'C5D58EF67A7584E4A29F6C35BBC4EB12'
-            const data = Buffer.from(infoRes.data.data, 'base64')
-            const decipher = crypto.createDecipheriv('aes-128-cbc', Buffer.from(keyRaw, 'hex'), data.slice(0, 16))
-            const decrypted = Buffer.concat([decipher.update(data.slice(16)), decipher.final()])
+            if (!infoRes.data?.data) return null
+
+            // Decriptar Key correctamente
+            const secret = 'C5D58EF67A7584E4A29F6C35BBC4EB12'
+            const encryptedData = Buffer.from(infoRes.data.data, 'base64')
+            const iv = encryptedData.slice(0, 16)
+            const payload = encryptedData.slice(16)
+            const decipher = crypto.createDecipheriv('aes-128-cbc', Buffer.from(secret, 'hex'), iv)
+            const decrypted = Buffer.concat([decipher.update(payload), decipher.final()])
             const { key, title } = JSON.parse(decrypted.toString())
 
-            // 3. Solicitar descarga
+            // 3. Obtener Link Final
             const dlRes = await client.post(`https://${cdn}${this.api}/download`, {
                 id,
                 downloadType: type,
@@ -66,30 +71,42 @@ const savetube = {
                 key
             }, { headers: getHeaders() })
 
-            return { download: dlRes.data.data.downloadUrl, title }
-        } catch (e) { return null }
+            return { 
+                download: dlRes.data.data.downloadUrl, 
+                title: title || 'YouTube Media' 
+            }
+        } catch (e) {
+            return null
+        }
     }
 }
 
-// --- MÓDULO YTMP3 (AUDIO RÁPIDO) ---
-async function ytmp3(url) {
+// Motor alternativo para Audio Completo (128kbps)
+async function ytmp3_alt(url) {
     try {
         const res = await client.post('https://hub.y2mp3.co/', {
-            url, downloadMode: "audio", audioFormat: "mp3", audioBitrate: CONFIG.A_BITRATE
-        }, { headers: getHeaders(), timeout: 10000 })
-        return res.data.url || null
-    } catch { return null }
+            url, 
+            downloadMode: "audio", 
+            audioFormat: "mp3", 
+            audioBitrate: CONFIG.A_BITRATE
+        }, { 
+            headers: getHeaders('ytmp3'), 
+            timeout: CONFIG.MAX_TIMEOUT 
+        })
+        return res.data?.url || null
+    } catch {
+        return null
+    }
 }
 
-// --- LÓGICA DE CARRERA ---
 async function raceWithFallback(url, isAudio, title) {
+    // Si es audio, intentamos primero el servidor dedicado de MP3 para evitar cortes
     if (isAudio) {
-        // Para audio, intentamos YTMP3 primero por ser el más rápido
-        const fastAudio = await ytmp3(url)
-        if (fastAudio) return { download: fastAudio, title, winner: 'YTMP3' }
+        const audio = await ytmp3_alt(url)
+        if (audio) return { download: audio, title, winner: 'YTMP3' }
     }
 
-    // Si falla o es video, usamos Savetube con 360p
+    // Para Video o si falló el anterior, usamos Savetube
     const res = await savetube.download(url, isAudio ? 'audio' : 'video')
     if (res && res.download) {
         return { ...res, winner: 'Savetube' }
@@ -99,8 +116,22 @@ async function raceWithFallback(url, isAudio, title) {
 }
 
 async function getBufferFromUrl(url) {
-    const res = await fetch(url, { headers: getHeaders() })
-    return res.buffer()
+    try {
+        const res = await fetch(url, { 
+            headers: getHeaders(),
+            timeout: 0 // Permitir descargas largas sin corte
+        })
+        if (!res.ok) throw new Error(`Status ${res.status}`)
+        return await res.buffer()
+    } catch (e) {
+        throw new Error(`Error en buffer: ${e.message}`)
+    }
+}
+
+function colorize(text, isError = false) {
+    const codes = { reset: '\x1b[0m', cyan: '\x1b[36m', red: '\x1b[31m' }
+    let color = isError || text.includes('ERROR') ? codes.red : codes.cyan
+    return `${color}${text}${codes.reset}`
 }
 
 function cleanFileName(n) { 
