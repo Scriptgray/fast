@@ -2,14 +2,17 @@ import fetch from "node-fetch"
 import axios from "axios"
 import crypto from "crypto"
 
-// --- CONFIGURACIÓN DE NAVEGACIÓN (ANDROID SIMULATION) ---
+// --- SIMULACIÓN DE ANDROID (CHROME) ---
 const ANDROID_UA = 'Mozilla/5.0 (Linux; Android 13; SM-S901B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/112.0.0.0 Mobile Safari/537.36';
 
 const CONFIG = {
+    CACHE_DURATION: 300000,
+    MAX_RETRIES: 2,
+    REQUEST_TIMEOUT: 15000,
     MAX_FILENAME_LENGTH: 50,
-    // Tiempos ultra-rápidos para respuesta inmediata
-    RACE_TIMEOUT: 15000, 
-    BUFFER_TIMEOUT: 30000
+    // Tiempos ajustados para asegurar que el archivo se genere bien
+    RACE_TIMEOUT: 25000,
+    BUFFER_TIMEOUT: 60000 
 }
 
 // --- UTILIDADES ---
@@ -28,41 +31,49 @@ function cleanFileName(n) {
     return n.replace(/[<>:"/\\|?*]/g, "").substring(0, CONFIG.MAX_FILENAME_LENGTH);
 }
 
-// --- SERVICIOS OPTIMIZADOS ---
+// --- SERVICIOS CON CABECERAS DE ANDROID ---
 
-const services = {
-    savetube: async (url, isAudio) => {
-        const id = url.match(/v=([a-zA-Z0-9_-]{11})|be\/([a-zA-Z0-9_-]{11})|shorts\/([a-zA-Z0-9_-]{11})/)?.[1] || url.match(/v=([a-zA-Z0-9_-]{11})|be\/([a-zA-Z0-9_-]{11})|shorts\/([a-zA-Z0-9_-]{11})/)?.[2] || url.match(/v=([a-zA-Z0-9_-]{11})|be\/([a-zA-Z0-9_-]{11})|shorts\/([a-zA-Z0-9_-]{11})/)?.[3];
-        if (!id) throw 'No ID';
-        const headers = { 'user-agent': ANDROID_UA, 'content-type': 'application/json' };
-        const { data: cdnRes } = await axios.get('https://media.savetube.me/api/random-cdn', { headers });
-        const { data: infoRes } = await axios.post(`https://${cdnRes.cdn}/api/v2/info`, { url: `https://www.youtube.com/watch?v=${id}` }, { headers });
-        
-        // Desencriptación rápida
+const savetube = {
+    headers: {
+        'accept': '*/*',
+        'content-type': 'application/json',
+        'origin': 'https://yt.savetube.me',
+        'referer': 'https://yt.savetube.me/',
+        'user-agent': ANDROID_UA
+    },
+    decrypt: (enc) => {
         const secretKey = 'C5D58EF67A7584E4A29F6C35BBC4EB12';
-        const encData = Buffer.from(infoRes.data, 'base64');
-        const decipher = crypto.createDecipheriv('aes-128-cbc', Buffer.from(secretKey, 'hex'), encData.slice(0, 16));
-        const decrypted = JSON.parse(Buffer.concat([decipher.update(encData.slice(16)), decipher.final()]).toString());
-
+        const data = Buffer.from(enc, 'base64');
+        const decipher = crypto.createDecipheriv('aes-128-cbc', Buffer.from(secretKey, 'hex'), data.slice(0, 16));
+        const decrypted = Buffer.concat([decipher.update(data.slice(16)), decipher.final()]);
+        return JSON.parse(decrypted.toString());
+    },
+    download: async (url, isAudio) => {
+        const id = url.match(/v=([a-zA-Z0-9_-]{11})|be\/([a-zA-Z0-9_-]{11})|shorts\/([a-zA-Z0-9_-]{11})/)?.[1] || url.match(/v=([a-zA-Z0-9_-]{11})|be\/([a-zA-Z0-9_-]{11})|shorts\/([a-zA-Z0-9_-]{11})/)?.[2] || url.match(/v=([a-zA-Z0-9_-]{11})|be\/([a-zA-Z0-9_-]{11})|shorts\/([a-zA-Z0-9_-]{11})/)?.[3];
+        const { data: cdnRes } = await axios.get('https://media.savetube.me/api/random-cdn', { headers: savetube.headers });
+        const { data: infoRes } = await axios.post(`https://${cdnRes.cdn}/api/v2/info`, { url: `https://www.youtube.com/watch?v=${id}` }, { headers: savetube.headers });
+        const info = savetube.decrypt(infoRes.data);
         const { data: dlRes } = await axios.post(`https://${cdnRes.cdn}/api/download`, {
-            id, downloadType: isAudio ? 'audio' : 'video', quality: isAudio ? '128' : '720', key: decrypted.key
-        }, { headers });
-        
-        return { download: dlRes.data.downloadUrl, winner: 'Savetube' };
-    },
+            id, downloadType: isAudio ? 'audio' : 'video', quality: isAudio ? '128' : '720', key: info.key
+        }, { headers: savetube.headers });
+        if (!dlRes.data?.downloadUrl) throw 'Error link';
+        return { download: dlRes.data.downloadUrl, winner: 'Savetube', title: info.title };
+    }
+};
 
-    ytdown: async (url, isAudio) => {
-        const { data: info } = await axios.post('https://ytdown.to/proxy.php', `url=${encodeURIComponent(url)}`, { 
-            headers: { 'User-Agent': ANDROID_UA, 'Content-Type': 'application/x-www-form-urlencoded' } 
-        });
+const ytdown = {
+    download: async (url, isAudio) => {
+        const headers = { 'User-Agent': ANDROID_UA, 'Content-Type': 'application/x-www-form-urlencoded' };
+        const { data: info } = await axios.post('https://ytdown.to/proxy.php', `url=${encodeURIComponent(url)}`, { headers });
         const items = info.api?.mediaItems || [];
-        const target = items.find(it => (isAudio ? it.type === 'Audio' : it.mediaRes?.includes('720'))) || items[0];
-        if (!target?.mediaUrl) throw 'No Link';
-        return { download: target.mediaUrl, winner: 'Ytdown.to' };
-    },
+        const best = items.find(it => isAudio ? it.type === 'Audio' : it.mediaRes?.includes('720')) || items[0];
+        if (!best?.mediaUrl) throw 'No media';
+        return { download: best.mediaUrl, winner: 'Ytdown.to' };
+    }
+};
 
-    ytmp3: async (url, isAudio) => {
-        if (!isAudio) throw 'Solo audio';
+const ytmp3 = {
+    download: async (url) => {
         const { data } = await axios.post('https://hub.y2mp3.co/', {
             url, downloadMode: "audio", brandName: "ytmp3.gg", audioFormat: "mp3", audioBitrate: "128"
         }, { headers: { 'User-Agent': ANDROID_UA } });
@@ -71,44 +82,52 @@ const services = {
     }
 };
 
-// --- FUNCIÓN PRINCIPAL (LA CARRERA) ---
+// --- LOGICA DE ENVÍO Y CARRERA ---
 
 async function raceWithFallback(url, isAudio, originalTitle) {
     console.log(colorize(`[BUSCANDO] ${isAudio ? 'Audio' : 'Video'} → ${originalTitle}`));
 
-    // Creamos todas las promesas al mismo tiempo
     const promises = [
-        services.savetube(url, isAudio),
-        services.ytdown(url, isAudio)
+        savetube.download(url, isAudio).catch(() => null),
+        ytdown.download(url, isAudio).catch(() => null)
     ];
-    if (isAudio) promises.push(services.ytmp3(url, isAudio));
+    if (isAudio) promises.push(ytmp3.download(url).catch(() => null));
 
-    try {
-        // Promise.any devuelve el PRIMERO que resuelva con éxito. 
-        // Es la forma más rápida posible de obtener el resultado.
-        const result = await Promise.any(promises);
-        
-        console.log(colorize(`[ENVIADO] ${result.winner} ganó la carrera.`));
-        return {
-            ...result,
-            title: originalTitle
-        };
-    } catch (e) {
-        console.error(colorize(`[ERROR] Todos los servicios fallaron o fueron lentos.`, true));
+    // Esperamos a la primera que responda BIEN
+    const results = await Promise.all(promises);
+    const winner = results.find(r => r && r.download);
+
+    if (!winner) {
+        console.error(colorize(`[ERROR] No se pudo obtener enlace válido de ningún servicio.`, true));
         return null;
     }
+
+    console.log(colorize(`[ENVIADO] Éxito vía ${winner.winner}`));
+    return { ...winner, title: winner.title || originalTitle };
 }
 
 async function getBufferFromUrl(url) {
     try {
+        // MUY IMPORTANTE: Se añade el User-Agent también al descargar el archivo
+        // Esto evita que mande archivos de 0kb o corruptos.
         const res = await fetch(url, { 
-            headers: { 'User-Agent': ANDROID_UA },
+            headers: { 
+                'User-Agent': ANDROID_UA,
+                'Accept': '*/*',
+                'Connection': 'keep-alive'
+            },
             timeout: CONFIG.BUFFER_TIMEOUT 
         });
-        if (!res.ok) throw '';
-        return await res.buffer();
+        
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        
+        const buffer = await res.buffer();
+        if (buffer.length < 1000) throw new Error("Archivo demasiado pequeño/corrupto");
+        
+        return buffer;
     } catch (e) {
-        throw new Error("No se pudo descargar el archivo final.");
+        console.error(colorize(`[ERROR] Error al descargar buffer: ${e.message}`, true));
+        throw e;
     }
 }
 
