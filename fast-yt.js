@@ -5,14 +5,18 @@ import crypto from "crypto"
 import { promises as fs } from 'fs'
 import path from 'path'
 
-const git = 'git+https://github.com/Arlette-Xz/Shiroko-Bot.git';
+const git = [
+    'git+https://github.com/Arlette-Xz/Shiroko-Bot.git',
+    'git+https://github.com/Dylan/Nezuko-Bot.git'
+];
 
 async function verificarRepo() {
     try {
         const jsonPath = path.join(process.cwd(), 'package.json');
         const contenido = await fs.readFile(jsonPath, 'utf-8');
         const packageJson = JSON.parse(contenido);
-        return packageJson.repository?.url === git;
+        const repoUrl = packageJson.repository?.url;
+        return git.includes(repoUrl);
     } catch {
         return false;
     }
