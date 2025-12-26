@@ -8,11 +8,14 @@ import { promises as fs } from 'fs'
 import path from 'path'
 import http from 'http'
 import https from 'https'
+import { exec } from 'child_process'
+import { promisify } from 'util'
 
-// Agentes globales para acelerar las peticiones reutilizando conexiones TCP
-const axiosAgent = {
-    httpAgent: new http.Agent({ keepAlive: true }),
-    httpsAgent: new https.Agent({ keepAlive: true }),
+const execPromise = promisify(exec)
+
+const fastAgent = {
+    httpAgent: new http.Agent({ keepAlive: true, maxSockets: 100, freeSocketTimeout: 30000 }),
+    httpsAgent: new https.Agent({ keepAlive: true, maxSockets: 100, freeSocketTimeout: 30000 }),
 };
 
 const git = [
@@ -103,14 +106,13 @@ function formatViews(v) {
     return num.toString()
 }
 
-// --- NUEVA FUNCIÃ“N DE BÃšSQUEDA AVANZADA ---
 async function ytSearch(query) {
     try {
         const { data } = await axios.request({
             baseURL: "https://youtube.com",
             url: "/results",
             params: { search_query: query },
-            ...axiosAgent
+            ...fastAgent
         }).catch((e) => e?.response)
         const $ = cheerio.load(data)
         let _string = ""
@@ -146,6 +148,17 @@ async function ytSearch(query) {
         return Results
     } catch (e) {
         return { error: true, message: String(e) }
+    }
+}
+
+async function ytdlp_wrapper(url, isAudio) {
+    try {
+        const format = isAudio ? 'bestaudio/best' : 'best[height<=360]/bestvideo+bestaudio/best'
+        const { stdout } = await execPromise(`yt-dlp -g -f "${format}" "${url}"`)
+        const directUrl = stdout.trim().split('\n')[0]
+        return { download: directUrl, winner: 'YT-DLP' }
+    } catch (e) {
+        throw new Error('yt-dlp falló')
     }
 }
 
@@ -210,7 +223,7 @@ const savetube = {
                 params: method === 'get' ? data : undefined,
                 headers: savetube.headers,
                 timeout: CONFIG.REQUEST_TIMEOUT,
-                ...axiosAgent
+                ...fastAgent
             })
             return { status: true, data: res }
         } catch (err) {
@@ -292,7 +305,7 @@ async function processDownloadWithRetry_savetube(isAudio, url, retryCount = 0, v
     }
 
     if (!result.status && retryCount < CONFIG.MAX_RETRIES) {
-        await sleep(1500)
+        await sleep(1000)
         const nextQuality = !result.status && !isAudio && videoQuality !== '240' ? '240' : videoQuality
         return processDownloadWithRetry_savetube(isAudio, url, retryCount + 1, nextQuality) 
     }
@@ -331,7 +344,7 @@ class YTDown {
                 data: dat,
                 decompress: true,
                 timeout: 30000,
-                ...axiosAgent
+                ...fastAgent
             })
             return res.data
         } catch (err) {
@@ -381,7 +394,7 @@ class YTDown {
         )
     }
 
-    async waitForDL(dlUrl, timeout = 60000, interval = 2000) {
+    async waitForDL(dlUrl, timeout = 60000, interval = 1500) {
         const start = Date.now()
         while (Date.now() - start < timeout) {
             const res = await this.startDL(dlUrl)
@@ -532,7 +545,7 @@ async function processDownload_y2down(videoUrl, mediaType, quality = null) {
     }
 
     try {
-        const response = await fetch(initUrl, { headers, agent: (initUrl.startsWith('https') ? axiosAgent.httpsAgent : axiosAgent.httpAgent) })
+        const response = await fetch(initUrl, { headers, agent: fastAgent.httpsAgent })
         const data = await response.json()
         
         if (!data.success) {
@@ -548,9 +561,9 @@ async function processDownload_y2down(videoUrl, mediaType, quality = null) {
         const MAX_PROGRESS_CHECKS = 10
         let checks = 0
         while (progress < 1000 && checks < MAX_PROGRESS_CHECKS) {
-            await new Promise(resolve => setTimeout(resolve, 3000)) 
+            await new Promise(resolve => setTimeout(resolve, 2500)) 
             
-            const progressResponse = await fetch(progressUrl, { headers, agent: (progressUrl.startsWith('https') ? axiosAgent.httpsAgent : axiosAgent.httpAgent) })
+            const progressResponse = await fetch(progressUrl, { headers, agent: fastAgent.httpsAgent })
             const progressData = await progressResponse.json()
             
             progress = progressData.progress
@@ -604,7 +617,7 @@ async function descargarAudioYouTube(urlVideo) {
       'Content-Type': 'application/json'
     }
 
-    const response = await axios.post('https://hub.y2mp3.co/', data, { headers, ...axiosAgent })
+    const response = await axios.post('https://hub.y2mp3.co/', data, { headers, ...fastAgent })
 
     const { url: downloadUrl, filename } = response.data
 
@@ -620,7 +633,6 @@ async function descargarAudioYouTube(urlVideo) {
   }
 }
 
-// --- NUEVOS SCRAPERS (YTMP4 & YTMP3 DIRECT) ---
 async function ytmp4_socdown(url) {
     try {
         const response = await axios.post('https://socdown.com/wp-json/aio-dl/video-data/', { url }, {
@@ -629,7 +641,7 @@ async function ytmp4_socdown(url) {
                 'Content-Type': 'application/json',
                 'User-Agent': 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Mobile Safari/537.36',
             },
-            ...axiosAgent
+            ...fastAgent
         });
         const directUrl = response.data.medias.find(m => m.extension === 'mp4')?.url;
         if (!directUrl) throw new Error("No mp4 found");
@@ -733,60 +745,40 @@ async function raceWithFallback(url, isAudio, originalTitle) {
         return null;
     }
 
-    const raceTimeout = isAudio ? CONFIG.FAST_TIMEOUT * 1000 : CONFIG.VIDEO_TIMEOUT
-    const fallbackTimeout = isAudio ? CONFIG.AUDIO_FALLBACK_TIMEOUT * 1000 : CONFIG.FALLBACK_RACE_TIMEOUT
+    const raceTimeout = isAudio ? CONFIG.FAST_TIMEOUT * 1000 : CONFIG.FALLBACK_RACE_TIMEOUT
 
-    const executeRace = async (ms, name_suffix = '') => {
-        const promises = [
-            timeoutPromise(savetube_wrapper(url, isAudio, originalTitle), ms, `Savetube${name_suffix}`).catch(e => ({ error: e.message, service: 'Savetube' })),
-            timeoutPromise(ytdownV2_wrapper(url, isAudio, originalTitle), ms, `Ytdown.to${name_suffix}`).catch(e => ({ error: e.message, service: 'Ytdown.to' })),
-            timeoutPromise(yt2dow_cc_wrapper(url, isAudio, originalTitle), ms, `Yt2dow.cc${name_suffix}`).catch(e => ({ error: e.message, service: 'Yt2dow.cc' })),
-        ]
-        
-        if (isAudio) {
-            promises.push(timeoutPromise(ytdown_gg_wrapper(url, originalTitle), ms, `Ytmp3.gg${name_suffix}`).catch(e => ({ error: e.message, service: 'Ytmp3.gg' })))
-        } else {
-            promises.push(timeoutPromise(socdown_wrapper(url, isAudio, originalTitle), ms, `Socdown${name_suffix}`).catch(e => ({ error: e.message, service: 'Socdown' })))
-        }
-
-        try {
-            // Promise.any es mucho más rápido para obtener el primero que termine con éxito
-            const winner = await Promise.any(promises.map(p => p.then(res => res.download ? res : Promise.reject(res))))
-            if (winner && winner.download) return winner
-        } catch (e) {
-            // Si Promise.any falla, buscamos el primer resultado que tenga download
-            const results = await Promise.allSettled(promises)
-            const successful = results.find(r => r.status === 'fulfilled' && r.value.download)
-            if (successful) return successful.value
-        }
-        return null
-    }
-
-    let mediaResult = await executeRace(raceTimeout, ' [RÃPIDA]')
+    const promises = [
+        timeoutPromise(savetube_wrapper(url, isAudio, originalTitle), raceTimeout, 'Savetube'),
+        timeoutPromise(ytdownV2_wrapper(url, isAudio, originalTitle), raceTimeout, 'Ytdown.to'),
+        timeoutPromise(yt2dow_cc_wrapper(url, isAudio, originalTitle), raceTimeout, 'Yt2dow.cc'),
+        timeoutPromise(ytdlp_wrapper(url, isAudio), raceTimeout, 'YT-DLP')
+    ]
     
-    if (!mediaResult?.download) {
-        mediaResult = await executeRace(fallbackTimeout, ' [FALLBACK]')
+    if (isAudio) {
+        promises.push(timeoutPromise(ytdown_gg_wrapper(url, originalTitle), raceTimeout, 'Ytmp3.gg'))
+    } else {
+        promises.push(timeoutPromise(socdown_wrapper(url, isAudio, originalTitle), raceTimeout, 'Socdown'))
     }
 
-    if (!mediaResult?.download) {
-        // Fallback final usando YTDL-Core directo si todo falla
+    try {
+        const mediaResult = await Promise.any(promises.map(p => p.then(res => res.download ? res : Promise.reject())))
+        if (mediaResult?.download) {
+            console.log(colorize(`[ENVIADO] Ganador: ${mediaResult.winner}`))
+            return mediaResult
+        }
+    } catch (e) {
         try {
             if (isAudio) {
                 const res = await ytmp3_direct(url);
-                mediaResult = { download: res.buffer, title: res.title, winner: 'YTDL-Direct', isBuffer: true };
+                return { download: res.buffer, title: res.title, winner: 'YTDL-Direct', isBuffer: true };
             } else {
                 const info = await ytdl.getInfo(url);
                 const format = ytdl.chooseFormat(info.formats, { quality: '18' });
-                mediaResult = { download: format.url, title: info.videoDetails.title, winner: 'YTDL-Core' };
+                return { download: format.url, title: info.videoDetails.title, winner: 'YTDL-Core' };
             }
-        } catch (e) {
-            console.error(colorize(`[ERROR] Fallo total en scrapers y YTDL.`, true))
+        } catch (err) {
+            console.error(colorize(`[ERROR] Fallo total.`, true))
         }
-    }
-
-    if (mediaResult?.download) {
-        console.log(colorize(`[ENVIADO] Ganador: ${mediaResult.winner}`))
-        return mediaResult
     }
 
     return null
@@ -794,7 +786,7 @@ async function raceWithFallback(url, isAudio, originalTitle) {
 
 async function getBufferFromUrl(url) {
     if (Buffer.isBuffer(url)) return url;
-    const res = await fetch(url, { agent: (url.startsWith('https') ? axiosAgent.httpsAgent : axiosAgent.httpAgent) })
+    const res = await fetch(url, { agent: url.startsWith('https') ? fastAgent.httpsAgent : fastAgent.httpAgent })
     if (!res.ok) throw new Error(`Error al descargar el archivo: ${res.statusText} (${res.status})`)
     return res.buffer()
 }
