@@ -7,7 +7,7 @@ import path from 'path'
 
 const git = [
     'git+https://github.com/Arlette-Xz/Shiroko-Bot.git',
-    'git+https://github.com/Dylan/Nezuko-Bot.git'
+    'git+https://github.com/Dylan/N-Bot.git'
 ];
 
 async function verificarRepo() {
@@ -56,12 +56,12 @@ const CONFIG = {
     CACHE_DURATION: 300000,
     MAX_DURATION: 18000,
     MAX_RETRIES: 2,
-    REQUEST_TIMEOUT: 4000,
+    REQUEST_TIMEOUT: 3500,
     MAX_FILENAME_LENGTH: 50,
     FAST_TIMEOUT: 10,
-    VIDEO_TIMEOUT: 200,
+    VIDEO_TIMEOUT: 1000,
     AUDIO_FALLBACK_TIMEOUT: 40,
-    FALLBACK_RACE_TIMEOUT: 5000
+    FALLBACK_RACE_TIMEOUT: 4000
 }
 
 const cache = new Map()
