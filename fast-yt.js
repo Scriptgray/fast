@@ -57,7 +57,7 @@ function colorize(text, isError = false) {
 const CONFIG = {
     CACHE_DURATION: 300000,
     MAX_DURATION: 18000,
-    MAX_RETRIES: 4,
+    MAX_RETRIES: 3,
     REQUEST_TIMEOUT: 5000,
     MAX_FILENAME_LENGTH: 50,
     FAST_TIMEOUT: 10,
