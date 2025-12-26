@@ -95,7 +95,6 @@ function formatViews(v) {
     return num.toString()
 }
 
-// --- NUEVA FUNCIÃ“N DE BÃšSQUEDA AVANZADA ---
 async function ytSearch(query) {
     try {
         const { data } = await axios.request({
@@ -250,7 +249,7 @@ const savetube = {
             const downloadData = await savetube.request(`https://${cdn}${savetube.api.download}`, {
                 id,
                 downloadType: type === 'audio' ? 'audio' : 'video',
-                quality: type === 'audio' ? '128' : quality,
+                quality: type === 'audio' ? 'opus' : quality,
                 key: decrypted.key,
             })
             
@@ -383,7 +382,7 @@ class YTDown {
         if (!info.api || !info.api.mediaItems) return []
         const fup = fmt.toUpperCase()
         
-        if (fup === 'MP3') {
+        if (fup === 'OPUS' || fup === 'MP3' || fup === 'WEBM') {
             return info.api.mediaItems
                 .filter(it => it.type === 'Audio')
                 .map(aud => ({
@@ -437,7 +436,7 @@ class YTDown {
         if (!med || med.length === 0) return null
         const fup = fmt.toUpperCase()
 
-        if (fup === 'MP3') {
+        if (fup === 'OPUS' || fup === 'MP3' || fup === 'WEBM') {
             return med
                 .filter(it => it.q)
                 .sort((a, b) => (parseInt(b.q) || 0) - (parseInt(a.q) || 0))[0] || med[0]
@@ -467,7 +466,7 @@ class YTDown {
         return med[0]
     }
 
-    async ytdownV2(ytUrl, fmt = 'MP3', quality = '360') {
+    async ytdownV2(ytUrl, fmt = 'OPUS', quality = '360') {
         try {
             if (!(await this.chk())) {
                 throw new Error("Service not available")
@@ -499,13 +498,13 @@ class YTDown {
     }
 }
 
-const ytdownV2 = async (ytUrl, fmt = 'MP3', quality = '360') => {
+const ytdownV2 = async (ytUrl, fmt = 'OPUS', quality = '360') => {
     const yt = new YTDown()
     return await yt.ytdownV2(ytUrl, fmt, quality)
 }
 
 const videoQualities = ['144', '240', '360', '720', '1080', '1440', '4k']
-const audioQualities = ['mp3', 'm4a', 'webm', 'aacc', 'flac', 'apus', 'ogg', 'wav']
+const audioQualities = ['opus', 'mp3', 'm4a', 'webm', 'aacc', 'flac', 'apus', 'ogg', 'wav']
 
 async function processDownload_y2down(videoUrl, mediaType, quality = null) {
     const apiKey = 'dfcb6d76f2f6a9894gjkege8a4ab232222'
@@ -562,7 +561,7 @@ async function processDownload_y2down(videoUrl, mediaType, quality = null) {
 }
 
 async function yt2dow_cc(videoUrl, options = {}) {
-    const { quality = '360', format = 'mp3', type = 'video' } = options 
+    const { quality = '360', format = 'opus', type = 'video' } = options 
     
     if (type === 'video') {
         if (!videoQualities.includes(quality)) {
@@ -583,7 +582,7 @@ async function descargarAudioYouTube(urlVideo) {
       url: urlVideo,
       downloadMode: "audio",
       brandName: "ytmp3.gg",
-      audioFormat: "mp3",
+      audioFormat: "opus",
       audioBitrate: "128"
     }
 
@@ -608,7 +607,6 @@ async function descargarAudioYouTube(urlVideo) {
   }
 }
 
-// --- NUEVOS SCRAPERS (YTMP4 & YTMP3 DIRECT) ---
 async function ytmp4_socdown(url) {
     try {
         const response = await axios.post('https://socdown.com/wp-json/aio-dl/video-data/', { url }, {
@@ -627,7 +625,7 @@ async function ytmp4_socdown(url) {
 async function ytmp3_direct(url) {
     try {
         const { videoDetails } = await ytdl.getInfo(url);
-        const stream = ytdl(url, { filter: "audioonly", quality: 140 });
+        const stream = ytdl(url, { filter: "audioonly", quality: "highestaudio" });
         const chunks = [];
         for await (const chunk of stream) chunks.push(chunk);
         return { buffer: Buffer.concat(chunks), title: videoDetails.title };
@@ -650,7 +648,7 @@ async function savetube_wrapper(url, isAudio, originalTitle) {
 }
 
 async function ytdownV2_wrapper(url, isAudio, originalTitle) {
-    const fmt = isAudio ? 'MP3' : 'MP4'
+    const fmt = isAudio ? 'OPUS' : 'MP4'
     const quality = TARGET_VIDEO_QUALITY
     const downloadUrl = await ytdownV2(url, fmt, quality)
     return {
@@ -662,7 +660,7 @@ async function ytdownV2_wrapper(url, isAudio, originalTitle) {
 
 async function yt2dow_cc_wrapper(url, isAudio, originalTitle) {
     const options = isAudio 
-        ? { type: 'audio', format: 'mp3' }
+        ? { type: 'audio', format: 'opus' }
         : { type: 'video', quality: TARGET_VIDEO_QUALITY }
         
     const downloadUrl = await yt2dow_cc(url, options)
@@ -754,7 +752,6 @@ async function raceWithFallback(url, isAudio, originalTitle) {
     }
 
     if (!mediaResult?.download) {
-        // Fallback final usando YTDL-Core directo si todo falla
         try {
             if (isAudio) {
                 const res = await ytmp3_direct(url);
