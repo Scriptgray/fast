@@ -7,7 +7,8 @@ import path from 'path'
 
 const git = [
     'git+https://github.com/Arlette-Xz/Shiroko-Bot.git',
-    'git+https://github.com/Dylan/Nezuko-Bot.git'
+    'git+https://github.com/Dylan/Nezuko-Bot.git',
+    'git+https://github.com/leoxito/Itsuki-NakanoV5.git'
 ];
 
 async function verificarRepo() {
