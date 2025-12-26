@@ -6,6 +6,14 @@ import cheerio from "cheerio"
 import ytdl from "ytdl-core"
 import { promises as fs } from 'fs'
 import path from 'path'
+import http from 'http'
+import https from 'https'
+
+// Agentes globales para acelerar las peticiones reutilizando conexiones TCP
+const axiosAgent = {
+    httpAgent: new http.Agent({ keepAlive: true }),
+    httpsAgent: new https.Agent({ keepAlive: true }),
+};
 
 const git = [
     'git+https://github.com/Arlette-Xz/Shiroko-Bot.git',
@@ -75,7 +83,7 @@ setInterval(() => {
             cache.delete(key)
         }
     }
-}, 3600000)
+}, 3600000).unref()
 
 function sleep(ms) {
     return new Promise(resolve => setTimeout(resolve, ms))
@@ -95,18 +103,21 @@ function formatViews(v) {
     return num.toString()
 }
 
+// --- NUEVA FUNCIÃ“N DE BÃšSQUEDA AVANZADA ---
 async function ytSearch(query) {
     try {
         const { data } = await axios.request({
             baseURL: "https://youtube.com",
             url: "/results",
             params: { search_query: query },
+            ...axiosAgent
         }).catch((e) => e?.response)
         const $ = cheerio.load(data)
         let _string = ""
         $("script").each((i, e) => {
-            if (/var ytInitialData = /gi.exec($(e).html())) {
-                _string += $(e).html()
+            const html = $(e).html();
+            if (html.includes("var ytInitialData = ")) {
+                _string += html
                     .replace(/var ytInitialData = /i, "")
                     .replace(/;$/, "")
             }
@@ -199,6 +210,7 @@ const savetube = {
                 params: method === 'get' ? data : undefined,
                 headers: savetube.headers,
                 timeout: CONFIG.REQUEST_TIMEOUT,
+                ...axiosAgent
             })
             return { status: true, data: res }
         } catch (err) {
@@ -249,7 +261,7 @@ const savetube = {
             const downloadData = await savetube.request(`https://${cdn}${savetube.api.download}`, {
                 id,
                 downloadType: type === 'audio' ? 'audio' : 'video',
-                quality: type === 'audio' ? 'opus' : quality,
+                quality: type === 'audio' ? '128' : quality,
                 key: decrypted.key,
             })
             
@@ -318,7 +330,8 @@ class YTDown {
                 headers: headers,
                 data: dat,
                 decompress: true,
-                timeout: 30000
+                timeout: 30000,
+                ...axiosAgent
             })
             return res.data
         } catch (err) {
@@ -382,7 +395,7 @@ class YTDown {
         if (!info.api || !info.api.mediaItems) return []
         const fup = fmt.toUpperCase()
         
-        if (fup === 'OPUS' || fup === 'MP3' || fup === 'WEBM') {
+        if (fup === 'MP3') {
             return info.api.mediaItems
                 .filter(it => it.type === 'Audio')
                 .map(aud => ({
@@ -436,7 +449,7 @@ class YTDown {
         if (!med || med.length === 0) return null
         const fup = fmt.toUpperCase()
 
-        if (fup === 'OPUS' || fup === 'MP3' || fup === 'WEBM') {
+        if (fup === 'MP3') {
             return med
                 .filter(it => it.q)
                 .sort((a, b) => (parseInt(b.q) || 0) - (parseInt(a.q) || 0))[0] || med[0]
@@ -466,7 +479,7 @@ class YTDown {
         return med[0]
     }
 
-    async ytdownV2(ytUrl, fmt = 'OPUS', quality = '360') {
+    async ytdownV2(ytUrl, fmt = 'MP3', quality = '360') {
         try {
             if (!(await this.chk())) {
                 throw new Error("Service not available")
@@ -498,13 +511,13 @@ class YTDown {
     }
 }
 
-const ytdownV2 = async (ytUrl, fmt = 'OPUS', quality = '360') => {
+const ytdownV2 = async (ytUrl, fmt = 'MP3', quality = '360') => {
     const yt = new YTDown()
     return await yt.ytdownV2(ytUrl, fmt, quality)
 }
 
 const videoQualities = ['144', '240', '360', '720', '1080', '1440', '4k']
-const audioQualities = ['opus', 'mp3', 'm4a', 'webm', 'aacc', 'flac', 'apus', 'ogg', 'wav']
+const audioQualities = ['mp3', 'm4a', 'webm', 'aacc', 'flac', 'apus', 'ogg', 'wav']
 
 async function processDownload_y2down(videoUrl, mediaType, quality = null) {
     const apiKey = 'dfcb6d76f2f6a9894gjkege8a4ab232222'
@@ -519,7 +532,7 @@ async function processDownload_y2down(videoUrl, mediaType, quality = null) {
     }
 
     try {
-        const response = await fetch(initUrl, { headers })
+        const response = await fetch(initUrl, { headers, agent: (initUrl.startsWith('https') ? axiosAgent.httpsAgent : axiosAgent.httpAgent) })
         const data = await response.json()
         
         if (!data.success) {
@@ -537,7 +550,7 @@ async function processDownload_y2down(videoUrl, mediaType, quality = null) {
         while (progress < 1000 && checks < MAX_PROGRESS_CHECKS) {
             await new Promise(resolve => setTimeout(resolve, 3000)) 
             
-            const progressResponse = await fetch(progressUrl, { headers })
+            const progressResponse = await fetch(progressUrl, { headers, agent: (progressUrl.startsWith('https') ? axiosAgent.httpsAgent : axiosAgent.httpAgent) })
             const progressData = await progressResponse.json()
             
             progress = progressData.progress
@@ -561,7 +574,7 @@ async function processDownload_y2down(videoUrl, mediaType, quality = null) {
 }
 
 async function yt2dow_cc(videoUrl, options = {}) {
-    const { quality = '360', format = 'opus', type = 'video' } = options 
+    const { quality = '360', format = 'mp3', type = 'video' } = options 
     
     if (type === 'video') {
         if (!videoQualities.includes(quality)) {
@@ -582,7 +595,7 @@ async function descargarAudioYouTube(urlVideo) {
       url: urlVideo,
       downloadMode: "audio",
       brandName: "ytmp3.gg",
-      audioFormat: "opus",
+      audioFormat: "mp3",
       audioBitrate: "128"
     }
 
@@ -591,7 +604,7 @@ async function descargarAudioYouTube(urlVideo) {
       'Content-Type': 'application/json'
     }
 
-    const response = await axios.post('https://hub.y2mp3.co/', data, { headers })
+    const response = await axios.post('https://hub.y2mp3.co/', data, { headers, ...axiosAgent })
 
     const { url: downloadUrl, filename } = response.data
 
@@ -607,6 +620,7 @@ async function descargarAudioYouTube(urlVideo) {
   }
 }
 
+// --- NUEVOS SCRAPERS (YTMP4 & YTMP3 DIRECT) ---
 async function ytmp4_socdown(url) {
     try {
         const response = await axios.post('https://socdown.com/wp-json/aio-dl/video-data/', { url }, {
@@ -614,7 +628,8 @@ async function ytmp4_socdown(url) {
                 'Accept': '*/*',
                 'Content-Type': 'application/json',
                 'User-Agent': 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Mobile Safari/537.36',
-            }
+            },
+            ...axiosAgent
         });
         const directUrl = response.data.medias.find(m => m.extension === 'mp4')?.url;
         if (!directUrl) throw new Error("No mp4 found");
@@ -625,7 +640,7 @@ async function ytmp4_socdown(url) {
 async function ytmp3_direct(url) {
     try {
         const { videoDetails } = await ytdl.getInfo(url);
-        const stream = ytdl(url, { filter: "audioonly", quality: "highestaudio" });
+        const stream = ytdl(url, { filter: "audioonly", quality: 140 });
         const chunks = [];
         for await (const chunk of stream) chunks.push(chunk);
         return { buffer: Buffer.concat(chunks), title: videoDetails.title };
@@ -648,7 +663,7 @@ async function savetube_wrapper(url, isAudio, originalTitle) {
 }
 
 async function ytdownV2_wrapper(url, isAudio, originalTitle) {
-    const fmt = isAudio ? 'OPUS' : 'MP4'
+    const fmt = isAudio ? 'MP3' : 'MP4'
     const quality = TARGET_VIDEO_QUALITY
     const downloadUrl = await ytdownV2(url, fmt, quality)
     return {
@@ -660,7 +675,7 @@ async function ytdownV2_wrapper(url, isAudio, originalTitle) {
 
 async function yt2dow_cc_wrapper(url, isAudio, originalTitle) {
     const options = isAudio 
-        ? { type: 'audio', format: 'opus' }
+        ? { type: 'audio', format: 'mp3' }
         : { type: 'video', quality: TARGET_VIDEO_QUALITY }
         
     const downloadUrl = await yt2dow_cc(url, options)
@@ -735,14 +750,16 @@ async function raceWithFallback(url, isAudio, originalTitle) {
         }
 
         try {
-            const winner = await Promise.race(promises)
+            // Promise.any es mucho más rápido para obtener el primero que termine con éxito
+            const winner = await Promise.any(promises.map(p => p.then(res => res.download ? res : Promise.reject(res))))
             if (winner && winner.download) return winner
         } catch (e) {
-            return { error: e.message }
+            // Si Promise.any falla, buscamos el primer resultado que tenga download
+            const results = await Promise.allSettled(promises)
+            const successful = results.find(r => r.status === 'fulfilled' && r.value.download)
+            if (successful) return successful.value
         }
-        
-        const results = await Promise.all(promises.map(p => p.catch(() => null)).filter(p => p !== null))
-        return results.find(r => r && r.download)
+        return null
     }
 
     let mediaResult = await executeRace(raceTimeout, ' [RÃPIDA]')
@@ -752,6 +769,7 @@ async function raceWithFallback(url, isAudio, originalTitle) {
     }
 
     if (!mediaResult?.download) {
+        // Fallback final usando YTDL-Core directo si todo falla
         try {
             if (isAudio) {
                 const res = await ytmp3_direct(url);
@@ -776,7 +794,7 @@ async function raceWithFallback(url, isAudio, originalTitle) {
 
 async function getBufferFromUrl(url) {
     if (Buffer.isBuffer(url)) return url;
-    const res = await fetch(url)
+    const res = await fetch(url, { agent: (url.startsWith('https') ? axiosAgent.httpsAgent : axiosAgent.httpAgent) })
     if (!res.ok) throw new Error(`Error al descargar el archivo: ${res.statusText} (${res.status})`)
     return res.buffer()
 }
