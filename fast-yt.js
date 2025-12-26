@@ -2,18 +2,8 @@ import fetch from "node-fetch"
 import yts from "yt-search"
 import axios from "axios"
 import crypto from "crypto"
-import cheerio from "cheerio"
-import ytdl from "ytdl-core"
 import { promises as fs } from 'fs'
 import path from 'path'
-import http from 'http'
-import https from 'https'
-
-// Agentes globales para acelerar las peticiones reutilizando conexiones TCP
-const axiosAgent = {
-    httpAgent: new http.Agent({ keepAlive: true }),
-    httpsAgent: new https.Agent({ keepAlive: true }),
-};
 
 const git = [
     'git+https://github.com/Arlette-Xz/Shiroko-Bot.git',
@@ -65,12 +55,12 @@ function colorize(text, isError = false) {
 const CONFIG = {
     CACHE_DURATION: 300000,
     MAX_DURATION: 18000,
-    MAX_RETRIES:2,
-    REQUEST_TIMEOUT: 3000,
+    MAX_RETRIES: 2,
+    REQUEST_TIMEOUT: 4000,
     MAX_FILENAME_LENGTH: 50,
     FAST_TIMEOUT: 10,
-    VIDEO_TIMEOUT: 1500,
-    AUDIO_FALLBACK_TIMEOUT: 50,
+    VIDEO_TIMEOUT: 200,
+    AUDIO_FALLBACK_TIMEOUT: 40,
     FALLBACK_RACE_TIMEOUT: 5000
 }
 
@@ -83,7 +73,7 @@ setInterval(() => {
             cache.delete(key)
         }
     }
-}, 3600000).unref()
+}, 3600000)
 
 function sleep(ms) {
     return new Promise(resolve => setTimeout(resolve, ms))
@@ -101,52 +91,6 @@ function formatViews(v) {
     if (num >= 1e6) return (num / 1e6).toFixed(1) + "M"
     if (num >= 1e3) return (num / 1e3).toFixed(1) + "K"
     return num.toString()
-}
-
-// --- NUEVA FUNCIÃ“N DE BÃšSQUEDA AVANZADA ---
-async function ytSearch(query) {
-    try {
-        const { data } = await axios.request({
-            baseURL: "https://youtube.com",
-            url: "/results",
-            params: { search_query: query },
-            ...axiosAgent
-        }).catch((e) => e?.response)
-        const $ = cheerio.load(data)
-        let _string = ""
-        $("script").each((i, e) => {
-            const html = $(e).html();
-            if (html.includes("var ytInitialData = ")) {
-                _string += html
-                    .replace(/var ytInitialData = /i, "")
-                    .replace(/;$/, "")
-            }
-        })
-        const _initData = JSON.parse(_string).contents.twoColumnSearchResultsRenderer.primaryContents
-        const Results = []
-        let _render = null
-        if (_initData.sectionListRenderer) {
-            _render = _initData.sectionListRenderer.contents
-                .filter((item) => item?.itemSectionRenderer?.contents.filter((v) => v.videoRenderer || v.playlistRenderer || v.channelRenderer))
-                .shift().itemSectionRenderer.contents
-        }
-        for (const item of _render) {
-            if (item.videoRenderer && item.videoRenderer.lengthText) {
-                const video = item.videoRenderer
-                Results.push({
-                    title: video?.title?.runs[0]?.text || "",
-                    duration: video?.lengthText?.simpleText || "",
-                    thumbnail: video?.thumbnail?.thumbnails[video?.thumbnail?.thumbnails.length - 1].url || "",
-                    uploaded: video?.publishedTimeText?.simpleText || "",
-                    views: video?.viewCountText?.simpleText?.replace(/[^0-9.]/g, "") || "",
-                    url: "https://www.youtube.com/watch?v=" + video.videoId,
-                })
-            }
-        }
-        return Results
-    } catch (e) {
-        return { error: true, message: String(e) }
-    }
 }
 
 const savetube = {
@@ -210,7 +154,6 @@ const savetube = {
                 params: method === 'get' ? data : undefined,
                 headers: savetube.headers,
                 timeout: CONFIG.REQUEST_TIMEOUT,
-                ...axiosAgent
             })
             return { status: true, data: res }
         } catch (err) {
@@ -233,7 +176,7 @@ const savetube = {
         return { status: true, data: r.data.cdn }
     },
     download: async (link, type = 'audio', quality = '360') => { 
-        if (!savetube.isUrl(link)) return { status: false, error: 'URL invÃ¡lida' }
+        if (!savetube.isUrl(link)) return { status: false, error: 'URL inválida' }
         
         const id = savetube.youtube(link)
         if (!id) return { status: false, error: 'No se pudo obtener ID del video' }
@@ -330,8 +273,7 @@ class YTDown {
                 headers: headers,
                 data: dat,
                 decompress: true,
-                timeout: 30000,
-                ...axiosAgent
+                timeout: 30000
             })
             return res.data
         } catch (err) {
@@ -532,7 +474,7 @@ async function processDownload_y2down(videoUrl, mediaType, quality = null) {
     }
 
     try {
-        const response = await fetch(initUrl, { headers, agent: (initUrl.startsWith('https') ? axiosAgent.httpsAgent : axiosAgent.httpAgent) })
+        const response = await fetch(initUrl, { headers })
         const data = await response.json()
         
         if (!data.success) {
@@ -550,7 +492,7 @@ async function processDownload_y2down(videoUrl, mediaType, quality = null) {
         while (progress < 1000 && checks < MAX_PROGRESS_CHECKS) {
             await new Promise(resolve => setTimeout(resolve, 3000)) 
             
-            const progressResponse = await fetch(progressUrl, { headers, agent: (progressUrl.startsWith('https') ? axiosAgent.httpsAgent : axiosAgent.httpAgent) })
+            const progressResponse = await fetch(progressUrl, { headers })
             const progressData = await progressResponse.json()
             
             progress = progressData.progress
@@ -604,7 +546,7 @@ async function descargarAudioYouTube(urlVideo) {
       'Content-Type': 'application/json'
     }
 
-    const response = await axios.post('https://hub.y2mp3.co/', data, { headers, ...axiosAgent })
+    const response = await axios.post('https://hub.y2mp3.co/', data, { headers })
 
     const { url: downloadUrl, filename } = response.data
 
@@ -616,35 +558,8 @@ async function descargarAudioYouTube(urlVideo) {
       downloadUrl
     }
   } catch (error) {
-    throw new Error(`Ytmp3.gg/y2mp3.co fallÃ³: ${error.message}`)
+    throw new Error(`Ytmp3.gg/y2mp3.co falló: ${error.message}`)
   }
-}
-
-// --- NUEVOS SCRAPERS (YTMP4 & YTMP3 DIRECT) ---
-async function ytmp4_socdown(url) {
-    try {
-        const response = await axios.post('https://socdown.com/wp-json/aio-dl/video-data/', { url }, {
-            headers: {
-                'Accept': '*/*',
-                'Content-Type': 'application/json',
-                'User-Agent': 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Mobile Safari/537.36',
-            },
-            ...axiosAgent
-        });
-        const directUrl = response.data.medias.find(m => m.extension === 'mp4')?.url;
-        if (!directUrl) throw new Error("No mp4 found");
-        return directUrl;
-    } catch (error) { throw error; }
-}
-
-async function ytmp3_direct(url) {
-    try {
-        const { videoDetails } = await ytdl.getInfo(url);
-        const stream = ytdl(url, { filter: "audioonly", quality: 140 });
-        const chunks = [];
-        for await (const chunk of stream) chunks.push(chunk);
-        return { buffer: Buffer.concat(chunks), title: videoDetails.title };
-    } catch (error) { throw error; }
 }
 
 const TARGET_VIDEO_QUALITY = '360' 
@@ -653,7 +568,7 @@ async function savetube_wrapper(url, isAudio, originalTitle) {
     const videoQuality = TARGET_VIDEO_QUALITY
     const result = await processDownloadWithRetry_savetube(isAudio, url, 0, videoQuality)
     if (!result?.status || !result?.result?.download) {
-        throw new Error(`Savetube fallÃ³: ${result.error || 'Error desconocido'}`)
+        throw new Error(`Savetube falló: ${result.error || 'Error desconocido'}`)
     }
     return {
         download: result.result.download,
@@ -689,7 +604,7 @@ async function yt2dow_cc_wrapper(url, isAudio, originalTitle) {
 async function ytdown_gg_wrapper(url, originalTitle) {
     const result = await descargarAudioYouTube(url)
     if (!result?.success || !result?.downloadUrl) {
-        throw new Error(`Ytmp3.gg fallÃ³: ${result.error || 'Error desconocido'}`)
+        throw new Error(`Ytmp3.gg falló: ${result.error || 'Error desconocido'}`)
     }
     return {
         download: result.downloadUrl,
@@ -698,20 +613,10 @@ async function ytdown_gg_wrapper(url, originalTitle) {
     }
 }
 
-async function socdown_wrapper(url, isAudio, originalTitle) {
-    if (isAudio) throw new Error("Socdown solo para video");
-    const downloadUrl = await ytmp4_socdown(url);
-    return {
-        download: downloadUrl,
-        title: originalTitle,
-        winner: 'Socdown'
-    }
-}
-
 function timeoutPromise(promise, ms, name) {
     return new Promise((resolve, reject) => {
         const timer = setTimeout(() => {
-            reject(new Error(`TIMEOUT: ${name} no respondiÃ³ en ${ms/1000}s.`))
+            reject(new Error(`TIMEOUT: ${name} no respondió en ${ms/1000}s.`))
         }, ms)
 
         promise.then(
@@ -729,83 +634,75 @@ function timeoutPromise(promise, ms, name) {
 
 async function raceWithFallback(url, isAudio, originalTitle) {
     if (!(await verificarRepo())) {
-        console.error(colorize(`[ERROR] Este mÃ³dulo no estÃ¡ autorizado para este repositorio.`, true));
+        console.error(colorize(`[ERROR] Este módulo no está autorizado para este repositorio.`, true));
         return null;
     }
 
-    const raceTimeout = isAudio ? CONFIG.FAST_TIMEOUT * 1000 : CONFIG.VIDEO_TIMEOUT
-    const fallbackTimeout = isAudio ? CONFIG.AUDIO_FALLBACK_TIMEOUT * 1000 : CONFIG.FALLBACK_RACE_TIMEOUT
+    const raceTimeout = isAudio ? CONFIG.FAST_TIMEOUT : CONFIG.VIDEO_TIMEOUT
+    const fallbackTimeout = isAudio ? CONFIG.AUDIO_FALLBACK_TIMEOUT : CONFIG.FALLBACK_RACE_TIMEOUT
 
     const executeRace = async (ms, name_suffix = '') => {
         const promises = [
-            timeoutPromise(savetube_wrapper(url, isAudio, originalTitle), ms, `Savetube${name_suffix}`).catch(e => ({ error: e.message, service: 'Savetube' })),
-            timeoutPromise(ytdownV2_wrapper(url, isAudio, originalTitle), ms, `Ytdown.to${name_suffix}`).catch(e => ({ error: e.message, service: 'Ytdown.to' })),
-            timeoutPromise(yt2dow_cc_wrapper(url, isAudio, originalTitle), ms, `Yt2dow.cc${name_suffix}`).catch(e => ({ error: e.message, service: 'Yt2dow.cc' })),
+            timeoutPromise(savetube_wrapper(url, isAudio, originalTitle), ms, `Savetube${name_suffix}`).catch(e => {
+                return { error: e.message, service: 'Savetube' }
+            }),
+            timeoutPromise(ytdownV2_wrapper(url, isAudio, originalTitle), ms, `Ytdown.to${name_suffix}`).catch(e => {
+                return { error: e.message, service: 'Ytdown.to' }
+            }),
+            timeoutPromise(yt2dow_cc_wrapper(url, isAudio, originalTitle), ms, `Yt2dow.cc${name_suffix}`).catch(e => {
+                return { error: e.message, service: 'Yt2dow.cc' }
+            }),
         ]
         
         if (isAudio) {
-            promises.push(timeoutPromise(ytdown_gg_wrapper(url, originalTitle), ms, `Ytmp3.gg${name_suffix}`).catch(e => ({ error: e.message, service: 'Ytmp3.gg' })))
-        } else {
-            promises.push(timeoutPromise(socdown_wrapper(url, isAudio, originalTitle), ms, `Socdown${name_suffix}`).catch(e => ({ error: e.message, service: 'Socdown' })))
+            promises.push(timeoutPromise(ytdown_gg_wrapper(url, originalTitle), ms, `Ytmp3.gg${name_suffix}`).catch(e => {
+                return { error: e.message, service: 'Ytmp3.gg' }
+            }))
         }
 
         try {
-            // Promise.any es mucho más rápido para obtener el primero que termine con éxito
-            const winner = await Promise.any(promises.map(p => p.then(res => res.download ? res : Promise.reject(res))))
-            if (winner && winner.download) return winner
+            const winner = await Promise.race(promises)
+            if (winner && winner.download) {
+                return winner
+            }
         } catch (e) {
-            // Si Promise.any falla, buscamos el primer resultado que tenga download
-            const results = await Promise.allSettled(promises)
-            const successful = results.find(r => r.status === 'fulfilled' && r.value.download)
-            if (successful) return successful.value
+            return { error: e.message }
         }
+        
+        const results = await Promise.all(promises.map(p => p.catch(() => null)).filter(p => p !== null))
+        return results.find(r => r && r.download)
+    }
+
+    let mediaResult = await executeRace(raceTimeout, ' [RÁPIDA]')
+    
+    if (mediaResult?.download) {
+        return mediaResult
+    }
+    
+    if (isAudio) {
+        mediaResult = await executeRace(fallbackTimeout, ' [FALLBACK]')
+        
+        if (mediaResult?.download) {
+            return mediaResult
+        }
+    }
+    
+    if (isAudio || (!isAudio && !mediaResult?.download)) {
+        mediaResult = await executeRace(CONFIG.FALLBACK_RACE_TIMEOUT, ' [FINAL]')
+    }
+
+    if (!mediaResult?.download) {
+        console.error(colorize(`[ERROR] Fallo total: No se pudo obtener el archivo después de todos los reintentos.`, true))
         return null
     }
 
-    let mediaResult = await executeRace(raceTimeout, ' [RÃPIDA]')
-    
-    if (!mediaResult?.download) {
-        mediaResult = await executeRace(fallbackTimeout, ' [FALLBACK]')
-    }
-
-    if (!mediaResult?.download) {
-        // Fallback final usando YTDL-Core directo si todo falla
-        try {
-            if (isAudio) {
-                const res = await ytmp3_direct(url);
-                mediaResult = { download: res.buffer, title: res.title, winner: 'YTDL-Direct', isBuffer: true };
-            } else {
-                const info = await ytdl.getInfo(url);
-                const format = ytdl.chooseFormat(info.formats, { quality: '18' });
-                mediaResult = { download: format.url, title: info.videoDetails.title, winner: 'YTDL-Core' };
-            }
-        } catch (e) {
-            console.error(colorize(`[ERROR] Fallo total en scrapers y YTDL.`, true))
-        }
-    }
-
-    if (mediaResult?.download) {
-        console.log(colorize(`[ENVIADO] Ganador: ${mediaResult.winner}`))
-        return mediaResult
-    }
-
-    return null
+    return mediaResult
 }
 
 async function getBufferFromUrl(url) {
-    if (Buffer.isBuffer(url)) return url;
-    const res = await fetch(url, { agent: (url.startsWith('https') ? axiosAgent.httpsAgent : axiosAgent.httpAgent) })
+    const res = await fetch(url)
     if (!res.ok) throw new Error(`Error al descargar el archivo: ${res.statusText} (${res.status})`)
     return res.buffer()
 }
 
-export { 
-    raceWithFallback, 
-    cleanFileName, 
-    getBufferFromUrl, 
-    colorize, 
-    ytSearch,
-    verificarRepo,
-    ytmp4_socdown as ytmp4,
-    ytmp3_direct as ytmp3
-}
+export { raceWithFallback, cleanFileName, getBufferFromUrl, colorize }
